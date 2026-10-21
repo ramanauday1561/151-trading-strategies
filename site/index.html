@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0e14">
+  <meta name="description" content="Live dashboard of 94 strategies from '151 Trading Strategies' (Kakushadze & Serur) applied to the NIFTY 50 and SENSEX with Yahoo Finance data, refreshed by GitHub Actions.">
+  <title>151 Strategies · NIFTY & SENSEX</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232dd4bf'/%3E%3Cpath d='M5 22l7-8 5 5 10-12' fill='none' stroke='%2304211d' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <div id="banner"></div>
+  <header class="topbar">
+    <button class="btn menu-btn" id="menu-btn" aria-label="Toggle menu" aria-expanded="false" aria-controls="nav">☰ Menu</button>
+    <a class="brand" href="#/">
+      <span class="logo" aria-hidden="true">151</span>
+      <span>Trading Strategies<small>NIFTY 50 &amp; SENSEX</small></span>
+    </a>
+    <div class="seg" role="group" aria-label="Universe" id="uni-seg">
+      <button type="button" data-uni="NIFTY50" aria-pressed="true">NIFTY 50</button>
+      <button type="button" data-uni="SENSEX30" aria-pressed="false">SENSEX</button>
+    </div>
+    <div class="ticker" id="ticker" aria-label="Live quotes"></div>
+    <div class="status" id="status"></div>
+  </header>
+  <div class="shell">
+    <nav id="nav" class="sidebar" aria-label="Sections"></nav>
+    <main id="view" tabindex="-1"><div class="loading"><div><div class="spin"></div>Loading market data…</div></div></main>
+  </div>
+  <footer>
+    <p><b>Not investment advice.</b> Educational research tool. Backtests are hypothetical, use delayed Yahoo Finance data, and ignore slippage, taxes, margin, borrow costs and most real-world frictions. Option prices are Black-Scholes theory (flat India VIX volatility), not market quotes. Past performance does not predict future results.</p>
+    <p>Strategies from Z. Kakushadze &amp; J. A. Serur, “151 Trading Strategies” (SSRN 3247865, 2018). Source &amp; method: <a href="https://github.com/ramanauday1561/151-trading-strategies">github.com/ramanauday1561/151-trading-strategies</a>.</p>
+  </footer>
+  <noscript><p style="padding:20px">This dashboard needs JavaScript.</p></noscript>
+  <script src="assets/vendor/chart.umd.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
