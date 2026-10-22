@@ -92,6 +92,8 @@ def perf(r: pd.Series, rf: float = 0.0) -> dict:
         "calmar": _f(cagr / abs(dd)) if dd < 0 else None,
         "hit_rate": _f((r > 0).sum() / max(1, (r != 0).sum())),
         "ret_1y": _f((1 + last).prod() - 1),
+        "ret_1m": _f((1 + r.iloc[-21:]).prod() - 1),
+        "ret_3m": _f((1 + r.iloc[-63:]).prod() - 1),
         "total_return": _f(eq.iloc[-1] - 1),
     }
 
@@ -111,6 +113,8 @@ def perf_monthly(pnl: pd.Series, scale: float = 12.0) -> dict:
         "total": _f(cum.iloc[-1]),
         "sharpe": _f(p.mean() / sd * math.sqrt(scale)) if sd > 0 else None,
         "hit_rate": _f((p > 0).mean()),
+        "last": _f(p.iloc[-1]),
+        "last3": _f(p.iloc[-3:].sum()),
         "worst": _f(p.min()),
         "best": _f(p.max()),
         "max_dd": _f(dd),

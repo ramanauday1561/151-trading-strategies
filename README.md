@@ -14,6 +14,15 @@ A dark-mode dashboard that runs the strategies from *151 Trading Strategies* (Z.
 
 GitHub pauses scheduled workflows after 60 days without repo activity; re-enable from the Actions tab if that happens.
 
+## Install on your phone (PWA)
+
+Open the Pages URL over HTTPS, then:
+* **Android / Chrome:** tap **⬇ Install app** in the header (or ⋮ → Install app).
+* **iPhone / iPad (Safari):** Share icon → **Add to Home Screen**.
+* **Share:** the **⤴ Share** button opens the system share sheet (or copies the link); links keep the current page, e.g. `#/s/2.25`.
+
+It opens offline with the last downloaded data (service worker `site/sw.js`, network-first so you always get fresh data when online).
+
 ## Run locally
 
 ```bash
