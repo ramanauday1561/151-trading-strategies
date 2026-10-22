@@ -385,3 +385,16 @@ details.fold + .toolbar, details.fold + .grid { margin-top: 12px; }
 }
 
 .fresh { font-size: 12.5px; margin-top: 6px; }
+
+.promo { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--radius); color: var(--text);
+  background: linear-gradient(135deg, rgba(45,212,191,.16), rgba(96,165,250,.12)); border: 1px solid rgba(45,212,191,.35); }
+.promo:hover { text-decoration: none; border-color: var(--accent); }
+.promo b { font-size: 15px; } .promo span { color: var(--text-2); font-size: 12.5px; }
+.stance .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 650; }
+.stance .big { font-size: 30px; font-weight: 750; margin: 2px 0 6px; font-family: var(--sans); }
+.stance.up { border-color: rgba(52,211,153,.4); } .stance.down { border-color: rgba(248,113,113,.4); }
+.votebar { display: flex; height: 8px; border-radius: 6px; overflow: hidden; background: var(--bg-2); margin-top: 10px; }
+.votebar i { display: block; } .votebar i.up { background: var(--up); } .votebar i.down { background: var(--down); } .votebar i.flat { background: var(--border-2); }
+.prow { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+.prow:first-child { border-top: 0; }
+.plist { margin-top: 6px; }
