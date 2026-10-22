@@ -88,6 +88,7 @@ def live_snapshot(md):
             "vs_dma200": float(s.iloc[-1] / s.rolling(200).mean().iloc[-1] - 1) if len(s) > 200 else None,
             "spark": [round(float(v), 2) for v in s.iloc[-90:].values],
             "intraday": md.intraday.get(sym),
+            "quote_time": (md.intraday.get(sym) or {}).get("stamp", "")[-5:] or None,
         }
         if sym == "^INDIAVIX":
             row["pctile_1y"] = float((s.iloc[-252:] <= s.iloc[-1]).mean())

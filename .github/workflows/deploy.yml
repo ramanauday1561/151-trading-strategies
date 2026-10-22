@@ -4,7 +4,7 @@ name: Refresh & Deploy
 # NSE trades 09:15-15:30 IST = 03:45-10:00 UTC, Mon-Fri.
 on:
   schedule:
-    - cron: "*/30 3-10 * * 1-5"   # every 30 min across the NSE session
+    - cron: "*/10 3-10 * * 1-5"   # every 10 min across the NSE session (GitHub may delay runs)
     - cron: "30 12 * * 1-5"       # after the close (18:00 IST) once Yahoo has the final bars
   workflow_dispatch:
   push:
@@ -32,6 +32,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Tests (a broken change must never reach the live site)
+        if: github.event_name != 'schedule'
         run: python -m pytest -q tests
       - name: Build live data (Yahoo Finance) and run all strategies
         run: python -m pipeline.run --out site/data
