@@ -129,14 +129,18 @@ const vlines = {
   id: 'vlines',
   afterDatasetsDraw(chart, _a, opts) {
     const { ctx, chartArea: ca, scales: { x } } = chart;
+    const drawn = {};
     (opts.lines || []).forEach(l => {
       const px = x.getPixelForValue(l.x);
       if (px < ca.left || px > ca.right) return;
+      const row = l.bottom ? 'b' : 't';
+      const tooClose = (drawn[row] || []).some(q => Math.abs(q - px) < 72);   // avoid overlapping labels on narrow screens
+      (drawn[row] = drawn[row] || []).push(px);
       ctx.save();
       ctx.strokeStyle = l.color; ctx.lineWidth = 1; ctx.setLineDash(l.dash || [4, 4]);
       ctx.beginPath(); ctx.moveTo(px, ca.top); ctx.lineTo(px, ca.bottom); ctx.stroke();
       ctx.setLineDash([]); ctx.fillStyle = l.color; ctx.font = '11px ' + Chart.defaults.font.family;
-      ctx.textAlign = 'center'; ctx.fillText(l.label, Math.min(Math.max(px, ca.left + 30), ca.right - 30), l.bottom ? ca.bottom - 6 : ca.top + 12);
+      ctx.textAlign = 'center'; if (!tooClose) ctx.fillText(l.label, Math.min(Math.max(px, ca.left + 30), ca.right - 30), l.bottom ? ca.bottom - 6 : ca.top + 12);
       ctx.restore();
     });
   },
@@ -196,10 +200,10 @@ function ddCell(b) {
   return isNum(m.cagr) ? fmt.pct(m.max_dd) : fmt.n(m.max_dd, 1) + (/vol/i.test(b.curve_units || '') ? ' vp' : '%');
 }
 
-function renderTable(t, small = true) {
+function renderTable(t, small = true, limit = 8) {
   const num = /^[+\-−]?[\d,.]+(%|x|d)?$|^₹|^[+\-]?\d/;
   const head = t.columns.map(c => `<th>${esc(c)}</th>`).join('');
-  const rows = t.rows.map(r => '<tr>' + r.map((c, i) => {
+  const rows = t.rows.map((r, n) => `<tr${n >= limit ? ' class="more" hidden' : ''}>` + r.map((c, i) => {
     const s = String(c ?? '');
     let k = '';
     if (i === 0 && /^(Long|Short)$/.test(s)) k = s === 'Long' ? 'up' : 'down';
@@ -209,8 +213,27 @@ function renderTable(t, small = true) {
     const right = i > 0 && num.test(s) ? ' r' : '';
     return `<td class="${right} ${k}">${esc(s)}</td>`;
   }).join('') + '</tr>').join('');
-  return `<div class="tbl-wrap ${small ? 'small' : ''}"><div class="cap">${esc(t.title)}</div><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const more = t.rows.length > limit ? `<div class="tbl-foot"><button class="btn show-all" type="button">Show all ${t.rows.length} rows</button></div>` : '';
+  return `<div class="tbl-wrap ${small ? 'small' : ''}"><div class="cap">${esc(t.title)}</div><div class="tbl-scroll"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>${more}</div>`;
 }
+
+// ---- tabs: all panels are rendered, charts inside are drawn lazily when a tab is first shown
+function tabsHTML(panels) {
+  if (panels.length < 2) return panels.map(p => `<section class="panel" id="panel-${p.id}">${p.html}</section>`).join('');
+  return `<div class="tabs" role="tablist">${panels.map((p, i) => `<button role="tab" type="button" class="tab" data-t="${p.id}" aria-selected="${i === 0}">${p.label}</button>`).join('')}</div>` +
+    panels.map((p, i) => `<section class="panel" role="tabpanel" id="panel-${p.id}" ${i ? 'hidden' : ''}>${p.html}</section>`).join('');
+}
+function wireTabs(panels) {
+  const done = new Set();
+  const show = id => {
+    panels.forEach(p => { const el = $('#panel-' + p.id); if (el) el.hidden = p.id !== id; });
+    $$('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.t === id));
+    if (!done.has(id)) { done.add(id); const p = panels.find(x => x.id === id); if (p && p.init) p.init(); }
+  };
+  $$('.tab').forEach(t => t.addEventListener('click', () => show(t.dataset.t)));
+  show(panels[0].id);
+}
+const isMobile = () => window.matchMedia('(max-width: 860px)').matches;
 
 const METRIC = {
   cagr: ['CAGR', fmt.spct, true], sharpe: ['Sharpe', v => fmt.n(v), true], vol: ['Volatility', fmt.pct], max_dd: ['Max drawdown', fmt.pct, true],
@@ -251,7 +274,10 @@ function metricTiles(b, compact) {
   });
   if (isRet && m.start) tiles.push(`<div class="tile"><div class="k">Backtest start</div><div class="v" style="font-size:15px">${esc(m.start)}</div><div class="s">${fmt.big(m.n)} trading days</div></div>`);
   if (isCyc && m.start) tiles.push(`<div class="tile"><div class="k">Backtest start</div><div class="v" style="font-size:15px">${esc(m.start)}</div></div>`);
-  return tiles.length ? `<div class="tiles ${compact ? 'compact' : ''}">${tiles.join('')}</div>` : '<p class="muted">No backtest metrics for this strategy.</p>';
+  if (!tiles.length) return '<p class="muted">No backtest metrics for this strategy.</p>';
+  const cl = `tiles ${compact ? 'compact' : ''}`;
+  if (tiles.length <= 6) return `<div class="${cl}">${tiles.join('')}</div>`;
+  return `<div class="${cl}">${tiles.slice(0, 6).join('')}</div><details class="fold inner"><summary>All metrics (${tiles.length - 6} more)</summary><div class="${cl}">${tiles.slice(6).join('')}</div></details>`;
 }
 
 // ------------------------------------------------------------------ chrome (header / nav)
@@ -269,7 +295,7 @@ function renderChrome() {
   }).join('');
   $('#ticker').innerHTML = q;
   const open = nseOpen();
-  $('#status').innerHTML = `<span class="dot ${open ? '' : 'off'}"></span><span>${open ? 'NSE open' : 'NSE closed'} · data as of ${esc(m.data_asof)} · updated ${ago(m.generated_at)}</span>`;
+  $('#status').innerHTML = `<span class="dot ${open ? '' : 'off'}"></span><span title="Latest bar: ${esc(m.data_asof)}">${open ? 'NSE open' : 'NSE closed'} · updated ${ago(m.generated_at)}</span>`;
   const cats = m.categories;
   const cur = location.hash;
   const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
@@ -281,7 +307,11 @@ function renderChrome() {
     <div class="grp">Reference</div>
     ${link('#/excluded', 'Not applicable', m.counts.excluded)}
     ${link('#/about', 'Method & data')}`;
+  $('#nav').insertAdjacentHTML('beforeend', `<div class="navfoot">${$('#status').innerHTML}<br>Latest bar: ${esc(m.data_asof)}</div>`);
   $$('#nav a').forEach(a => a.addEventListener('click', () => closeMenu()));
+  const r = location.hash.replace(/^#\/?/, '').split('/')[0] || 'home';
+  $$('#tabbar a[data-r]').forEach(a => { if (a.dataset.r === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  const mb = $('#menu-btn'); if (['c', 's', 'excluded'].includes(r)) mb.setAttribute('aria-current', 'page'); else mb.removeAttribute('aria-current');
 }
 function daysOld(iso) { return (Date.now() - Date.parse(iso)) / 864e5; }
 function ago(iso) {
@@ -296,7 +326,7 @@ function nseOpen() {
   const d = ist.getDay(), t = ist.getHours() * 60 + ist.getMinutes();
   return d >= 1 && d <= 5 && t >= 9 * 60 + 15 && t <= 15 * 60 + 30;
 }
-function closeMenu() { $('#nav').classList.remove('open'); $('#menu-btn').setAttribute('aria-expanded', 'false'); }
+function closeMenu() { $('#nav').classList.remove('open'); $('#scrim').hidden = true; $('#menu-btn').setAttribute('aria-expanded', 'false'); }
 
 // ------------------------------------------------------------------ views
 function setView(html) { const v = $('#view'); v.innerHTML = html; v.focus({ preventScroll: true }); window.scrollTo(0, 0); }
@@ -305,7 +335,7 @@ const loadingHTML = '<div class="loading"><div><div class="spin"></div>Loading�
 async function viewOverview() {
   setView(loadingHTML);
   await loadAll();
-  const list = allStrategies().map(s => ({ s, b: blockOf(s) })).filter(x => x.b && (x.b.signal || x.b.metrics));
+  const list = allStrategies().map(s => ({ s, b: blockOf(s) })).filter(x => x.b && !x.b.error && (x.b.signal || x.b.metrics));
   const longs = list.filter(x => x.b.signal?.bias === 'long').length;
   const shorts = list.filter(x => x.b.signal?.bias === 'short').length;
   const vix = (state.live?.indices || []).find(i => i.symbol === '^INDIAVIX');
@@ -313,32 +343,37 @@ async function viewOverview() {
   const m = state.meta;
   const hero = `
   <div class="hero">
-    <div class="tile"><div class="k">Strategies live</div><div class="v">${m.counts.implemented}</div><div class="s">of ${m.counts.book_sections} sections in the book · ${m.counts.excluded} not applicable</div></div>
-    <div class="tile"><div class="k">${UNI_LABEL[state.uni]}</div><div class="v">${idx ? fmt.big(idx.last, 2) : '–'}</div><div class="s ${cls(idx?.chg_pct)}">${idx ? fmt.spct(idx.chg_pct, 2) + ' today · ' + fmt.spct(idx.ret_1m) + ' 1M' : ''}</div></div>
-    <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 2) : '–'}</div><div class="s">${vix && isNum(vix.pctile_1y) ? fmt.n(vix.pctile_1y * 100, 0) + 'th percentile of last year' : ''}</div></div>
-    <div class="tile"><div class="k">Directional signals now</div><div class="v"><span class="up">${longs}</span> <span class="muted">/</span> <span class="down">${shorts}</span></div><div class="s">strategies leaning long / short</div></div>
+    <div class="tile"><div class="k">Strategies live</div><div class="v">${m.counts.implemented}</div><div class="s">${m.counts.excluded} of the book's ${m.counts.book_sections} not applicable</div></div>
+    <div class="tile"><div class="k">${UNI_LABEL[state.uni]}</div><div class="v">${idx ? fmt.big(idx.last, 2) : '–'}</div><div class="s ${cls(idx?.chg_pct)}">${idx ? fmt.spct(idx.chg_pct, 2) + ' today' : ''}</div></div>
+    <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 2) : '–'}</div><div class="s">${vix && isNum(vix.pctile_1y) ? fmt.n(vix.pctile_1y * 100, 0) + 'th pctile (1y)' : ''}</div></div>
+    <div class="tile"><div class="k">Signals long / short</div><div class="v"><span class="up">${longs}</span> <span class="muted">/</span> <span class="down">${shorts}</span></div><div class="s">strategies leaning each way</div></div>
   </div>`;
-  const nonOpt = list.filter(x => x.s.category !== 'options' && isNum(x.b.metrics?.sharpe)).sort((a, b) => b.b.metrics.sharpe - a.b.metrics.sharpe).slice(0, 6);
-  const opts = list.filter(x => x.s.category === 'options' && x.b.fit?.label === 'favourable').slice(0, 6);
+  const nonOpt = list.filter(x => x.s.category !== 'options' && isNum(x.b.metrics?.sharpe)).sort((a, b) => b.b.metrics.sharpe - a.b.metrics.sharpe).slice(0, 5);
+  const opts = list.filter(x => x.s.category === 'options' && x.b.fit?.label === 'favourable').slice(0, 5);
   const mini = (rows, fn) => rows.length ? `<div class="stack" style="gap:8px">${rows.map(fn).join('')}</div>` : '<p class="muted">Nothing flagged right now.</p>';
+  const rowL = (x, right) => `<a class="mrow" href="#/s/${x.s.id}"><span><span class="chip id">${x.s.id}</span> ${esc(x.s.name)}</span>${right}</a>`;
   const hi = `
-  <div class="grid cols-2" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:18px">
-    <div class="card"><h3>Best backtested risk-adjusted returns (non-option)</h3>${mini(nonOpt, x => `
-      <a class="row" style="display:flex;justify-content:space-between;gap:10px;color:inherit" href="#/s/${x.s.id}"><span><span class="chip id">${x.s.id}</span> ${esc(x.s.name)}</span><span class="num up">Sharpe ${fmt.n(x.b.metrics.sharpe)}</span></a>`)}</div>
-    <div class="card"><h3>Option setups favoured by today's regime</h3>${mini(opts, x => `
-      <a class="row" style="display:flex;justify-content:space-between;gap:10px;color:inherit" href="#/s/${x.s.id}"><span><span class="chip id">${x.s.id}</span> ${esc(x.s.name)}</span>${biasChip(x.b.signal.bias)}</a>`)}</div>
-  </div>`;
+  <details class="fold" id="hl" ${isMobile() ? '' : 'open'}><summary>Highlights</summary>
+    <div class="grid cols-2 even">
+      <div class="card"><h3>Best backtested risk-adjusted returns</h3>${mini(nonOpt, x => rowL(x, `<span class="num up">Sharpe ${fmt.n(x.b.metrics.sharpe)}</span>`))}</div>
+      <div class="card"><h3>Option setups favoured by today's regime</h3>${mini(opts, x => rowL(x, biasChip(x.b.signal.bias)))}</div>
+    </div></details>`;
   const pills = [['all', 'All']].concat(m.categories.map(c => [c.id, c.label]));
+  const SORTS = [['sharpe', 'Sharpe'], ['perf', 'Backtest return'], ['dd', 'Max drawdown'], ['hit', 'Hit rate'], ['id', 'Book section']];
   setView(`
     <div class="page-head"><div><h1>Signal board · ${UNI_LABEL[state.uni]}</h1>
-      <p>Every applicable strategy from <i>151 Trading Strategies</i>, run on live Yahoo Finance data. Click a row for the equity curve, current portfolio and method.</p></div></div>
+      <p>Every applicable strategy from <i>151 Trading Strategies</i> on live Yahoo Finance data. Tap one for its chart, portfolio and method.</p></div></div>
     ${hero}${hi}
     <div class="toolbar">
       <input type="search" id="q" placeholder="Search strategies…" value="${esc(state.filter.q)}" aria-label="Search strategies">
-      <div class="pills" id="cat-pills">${pills.map(([id, l]) => `<button class="pill" type="button" data-cat="${id}" aria-pressed="${state.filter.cat === id}">${esc(l)}</button>`).join('')}</div>
+      <select id="sortsel" class="only-m" aria-label="Sort by">${SORTS.map(([k, l]) => `<option value="${k}" ${state.sort.key === k ? 'selected' : ''}>Sort: ${l}</option>`).join('')}</select>
     </div>
-    <div class="tbl-wrap"><table id="board"></table></div>
-    <div class="legend"><span>vp = volatility points</span><span>Sharpe: annualised, before the risk-free rate</span><span>Option rows: monthly-roll backtest on theoretical prices</span></div>`);
+    <div class="pills scroll" id="cat-pills">${pills.map(([id, l]) => `<button class="pill" type="button" data-cat="${id}" aria-pressed="${state.filter.cat === id}">${esc(l)}</button>`).join('')}</div>
+    <div class="tbl-wrap only-d" style="margin-top:12px"><table id="board"></table></div>
+    <div class="blist only-m" id="blist"></div>
+    <div class="center" id="boardmore"></div>
+    <div class="legend"><span>vp = volatility points</span><span>Sharpe is annualised</span><span>Option rows: monthly-roll backtest on theoretical prices</span></div>`);
+  state.boardLimit = 20;
   const draw = () => {
     const q = state.filter.q.trim().toLowerCase();
     let rows = list.filter(x => (state.filter.cat === 'all' || x.s.category === state.filter.cat) &&
@@ -348,16 +383,27 @@ async function viewOverview() {
       : key === 'name' ? x.s.name.toLowerCase() : key === 'perf' ? perfCell(x.s, x.b).val : key === 'dd' ? x.b.metrics?.max_dd
       : key === 'hit' ? x.b.metrics?.hit_rate : x.b.metrics?.sharpe;
     rows = rows.slice().sort((a, b) => { const va = val(a), vb = val(b); if (va == null) return 1; if (vb == null) return -1; return va < vb ? -dir : va > vb ? dir : 0; });
+    const shown = rows.slice(0, state.boardLimit);
     const th = (k, label, r) => `<th class="sortable ${r ? 'r' : ''}" data-k="${k}" aria-sort="${state.sort.key === k ? (dir > 0 ? 'ascending' : 'descending') : 'none'}">${label}${state.sort.key === k ? `<span class="arr">${dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
-    $('#board').innerHTML = `<thead><tr>${th('id', 'ID')}${th('name', 'Strategy')}<th>Signal now</th>${th('perf', 'Backtest return', 1)}${th('sharpe', 'Sharpe', 1)}${th('dd', 'Max DD', 1)}${th('hit', 'Hit rate', 1)}<th></th></tr></thead><tbody>${rows.map(x => {
-      const p = perfCell(x.s, x.b), m = x.b.metrics || {};
+    $('#board').innerHTML = `<thead><tr>${th('id', 'ID')}${th('name', 'Strategy')}<th>Signal now</th>${th('perf', 'Backtest return', 1)}${th('sharpe', 'Sharpe', 1)}${th('dd', 'Max DD', 1)}${th('hit', 'Hit rate', 1)}<th></th></tr></thead><tbody>${shown.map(x => {
+      const p = perfCell(x.s, x.b), mm = x.b.metrics || {};
       return `<tr class="click" data-id="${x.s.id}" tabindex="0"><td><span class="chip id">${x.s.id}</span></td><td class="wrap"><b>${esc(x.s.name)}</b> ${statusChip(x.s)}</td>
         <td class="sig">${x.b.signal ? biasChip(x.b.signal.bias) + ' ' + esc(x.b.signal.label.length > 90 ? x.b.signal.label.slice(0, 88) + '…' : x.b.signal.label) : '–'}</td>
-        <td class="r ${p.cls}">${p.text}</td><td class="r ${cls(m.sharpe)}">${fmt.n(m.sharpe)}</td><td class="r">${ddCell(x.b)}</td><td class="r">${isNum(m.hit_rate) ? fmt.pct(m.hit_rate, 0) : '–'}</td>
+        <td class="r ${p.cls}">${p.text}</td><td class="r ${cls(mm.sharpe)}">${fmt.n(mm.sharpe)}</td><td class="r">${ddCell(x.b)}</td><td class="r">${isNum(mm.hit_rate) ? fmt.pct(mm.hit_rate, 0) : '–'}</td>
         <td>${x.b.curve ? spark(x.b.curve.strategy, 80, 24) : ''}</td></tr>`;
     }).join('') || '<tr><td colspan="8" class="empty">No strategies match.</td></tr>'}</tbody>`;
+    $('#blist').innerHTML = shown.map(x => {
+      const p = perfCell(x.s, x.b), mm = x.b.metrics || {};
+      const sg = x.b.signal ? esc(x.b.signal.label.length > 70 ? x.b.signal.label.slice(0, 68) + '…' : x.b.signal.label) : '';
+      return `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${statusChip(x.s)}</div>
+        <div class="l2">${x.b.signal ? biasChip(x.b.signal.bias) : ''}<span>${sg}</span></div>
+        <div class="l3"><span><i>Sharpe</i><b class="${cls(mm.sharpe)}">${fmt.n(mm.sharpe)}</b></span><span><i>Return</i><b class="${p.cls}">${p.text}</b></span><span><i>Max DD</i><b>${ddCell(x.b)}</b></span>${x.b.curve ? spark(x.b.curve.strategy, 64, 22) : ''}</div></a>`;
+    }).join('') || '<p class="empty">No strategies match.</p>';
+    $('#boardmore').innerHTML = rows.length > shown.length
+      ? `<button class="btn" type="button" id="more-btn">Show ${Math.min(20, rows.length - shown.length)} more <span class="muted">(${rows.length - shown.length} left)</span></button>` : (rows.length ? `<span class="muted">${rows.length} strategies</span>` : '');
+    $('#more-btn')?.addEventListener('click', () => { state.boardLimit += 20; draw(); });
     $$('#board th.sortable').forEach(h => h.addEventListener('click', () => {
-      const k = h.dataset.k; state.sort = state.sort.key === k ? { key: k, dir: -state.sort.dir } : { key: k, dir: k === 'id' || k === 'name' ? 1 : -1 }; draw();
+      const k = h.dataset.k; state.sort = state.sort.key === k ? { key: k, dir: -state.sort.dir } : { key: k, dir: k === 'id' || k === 'name' ? 1 : -1 }; state.boardLimit = 20; draw();
     }));
     $$('#board tr.click').forEach(r => {
       const go = () => { location.hash = '#/s/' + r.dataset.id; };
@@ -365,35 +411,40 @@ async function viewOverview() {
     });
   };
   draw();
-  $('#q').addEventListener('input', e => { state.filter.q = e.target.value; draw(); });
-  $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => { state.filter.cat = p.dataset.cat; $$('#cat-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
+  $('#q').addEventListener('input', e => { state.filter.q = e.target.value; state.boardLimit = 20; draw(); });
+  $('#sortsel').addEventListener('change', e => { const k = e.target.value; state.sort = { key: k, dir: k === 'id' ? 1 : -1 }; state.boardLimit = 20; draw(); });
+  $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => { state.filter.cat = p.dataset.cat; state.boardLimit = 20; $$('#cat-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
 }
 
 async function viewCategory(cat) {
   setView(loadingHTML);
   const d = await loadCat(cat);
   const c = state.meta.categories.find(x => x.id === cat);
-  let items = d.strategies;
+  const items = d.strategies;
   const isOpt = cat === 'options';
-  const OUT = [['all', 'All'], ['bullish', 'Bullish'], ['bearish', 'Bearish'], ['neutral', 'Neutral / sideways'], ['long', 'Long volatility'], ['short', 'Short volatility'], ['fav', 'Favoured now']];
+  const OUT = [['all', 'All'], ['bullish', 'Bullish'], ['bearish', 'Bearish'], ['neutral', 'Neutral'], ['long', 'Long vol'], ['short', 'Short vol'], ['fav', 'Favoured now']];
+  let limit = 12;
   const draw = () => {
     let rows = items;
     if (isOpt && state.optFilter !== 'all') {
       const f = state.optFilter;
       rows = rows.filter(s => f === 'bullish' || f === 'bearish' || f === 'neutral' ? s.outlook === f : f === 'long' || f === 'short' ? s.vol_view === f : blockOf(s)?.fit?.label === 'favourable');
     }
-    $('#cards').innerHTML = rows.map(s => {
+    const shown = rows.slice(0, limit);
+    $('#cards').innerHTML = shown.map(s => {
       const b = blockOf(s) || {}, m = b.metrics || {}, p = perfCell(s, b);
       return `<a class="scard" href="#/s/${s.id}"><div class="top"><span class="chip id">${s.id}</span><span>${statusChip(s)} ${b.signal ? biasChip(b.signal.bias) : ''}</span></div>
         <div class="nm">${esc(s.name)}</div><div class="sg">${esc(b.error ? 'Failed to compute in the latest run' : (b.signal?.label || (b.notes?.[0] || 'No data')))}</div>
         <div class="row"><div class="kv"><div><span>Return</span><b class="${p.cls}">${p.val == null ? '–' : (isNum(m.cagr) ? fmt.spct(m.cagr) : fmt.sn(m.avg) + '/mo')}</b></div><div><span>Sharpe</span><b class="${cls(m.sharpe)}">${fmt.n(m.sharpe)}</b></div></div>${b.curve ? spark(b.curve.strategy) : ''}</div></a>`;
     }).join('') || '<p class="empty">No strategies in this view.</p>';
+    $('#more').innerHTML = rows.length > shown.length ? `<button class="btn" type="button" id="more-btn">Show ${Math.min(12, rows.length - shown.length)} more <span class="muted">(${rows.length - shown.length} left)</span></button>` : `<span class="muted">${rows.length} strategies</span>`;
+    $('#more-btn')?.addEventListener('click', () => { limit += 12; draw(); });
   };
   setView(`<div class="page-head"><div><h1>${esc(c.label)} · ${UNI_LABEL[state.uni]}</h1><p>${esc(c.blurb)}</p></div></div>
-    ${isOpt ? `<div class="toolbar"><div class="pills" id="opt-pills">${OUT.map(([id, l]) => `<button class="pill" data-f="${id}" aria-pressed="${state.optFilter === id}" type="button">${l}</button>`).join('')}</div></div>` : ''}
-    <div class="cards" id="cards"></div>`);
+    ${isOpt ? `<div class="pills scroll" id="opt-pills">${OUT.map(([id, l]) => `<button class="pill" data-f="${id}" aria-pressed="${state.optFilter === id}" type="button">${l}</button>`).join('')}</div>` : ''}
+    <div class="cards" id="cards" style="margin-top:12px"></div><div class="center" id="more"></div>`);
   draw();
-  $$('#opt-pills .pill').forEach(p => p.addEventListener('click', () => { state.optFilter = p.dataset.f; $$('#opt-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
+  $$('#opt-pills .pill').forEach(p => p.addEventListener('click', () => { state.optFilter = p.dataset.f; limit = 12; $$('#opt-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
 }
 
 async function viewStrategy(id) {
@@ -413,7 +464,7 @@ async function viewStrategy(id) {
   const b = blockOf(s);
   const head = `
     <div class="crumbs"><a href="#/c/${s.category}">${esc(cat.label)}</a> › <span class="chip id">${s.id}</span>
-      <span style="margin-left:auto" class="nav-btns">${prev ? `<a class="btn" href="#/s/${prev.id}">← ${prev.id}</a>` : ''}${next ? `<a class="btn" href="#/s/${next.id}">${next.id} →</a>` : ''}</span></div>
+      <span style="margin-left:auto" class="nav-btns">${prev ? `<a class="btn" href="#/s/${prev.id}" aria-label="Previous strategy">← ${prev.id}</a>` : ''}${next ? `<a class="btn" href="#/s/${next.id}" aria-label="Next strategy">${next.id} →</a>` : ''}</span></div>
     <div class="page-head"><div><h1>${esc(s.name)} ${statusChip(s)}</h1><p>${esc(s.desc)}</p>
       ${s.adapted_note ? `<p style="margin-top:6px"><span class="chip ${s.status}">${s.status === 'proxy' ? 'PROXY DATA' : 'ADAPTED'}</span> <span class="muted">${esc(s.adapted_note)}</span></p>` : ''}</div>
       <div class="muted">${UNI_LABEL[state.uni]}${s.outlook ? ` · ${esc(s.outlook)} · ${esc(s.style)}` : ''}</div></div>`;
@@ -423,54 +474,67 @@ async function viewStrategy(id) {
   const sig = b.signal;
   const sigHTML = sig ? `<div class="signalbar ${(BIAS[sig.bias] || BIAS.neutral)[1]}">${biasChip(sig.bias)}<div><div class="lbl">${esc(sig.label)}</div>${sig.detail ? `<div class="det">${esc(sig.detail)}</div>` : ''}</div></div>` : '';
   const isOpt = !!b.payoff;
-  let body = '';
+  const benchLabel = isOpt ? 'Index monthly % move (cumulative)' : `${UNI_LABEL[state.uni]} buy & hold`;
+  const neutral = isNum(b.metrics?.beta) && Math.abs(b.metrics.beta) < 0.3 && !isOpt;
+  const panels = [];
+
+  const eqCard = (hint) => `<div class="card"><div class="chart-head"><h3>${isOpt ? 'Historical monthly-roll backtest' : 'Backtest'}</h3>
+      <div class="toggles">${/cumul/i.test(b.curve_units || '') ? '' : '<label><input type="checkbox" id="logscale"> Log scale</label>'}<span class="sub">${esc(b.curve_units || 'growth of 100')}${hint}</span></div></div>
+      <div class="chartbox"><canvas id="c-eq" role="img" aria-label="Strategy equity curve"></canvas></div></div>`;
+  const initEq = () => {
+    if (!b.curve) return;
+    const cv = $('#c-eq');
+    let ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral });
+    const lg = $('#logscale');
+    if (lg) lg.addEventListener('change', () => { state.charts = state.charts.filter(c => c !== ch); ch.destroy(); ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral, log: lg.checked }); });
+  };
+
   if (isOpt) {
     const st = b.stats;
     const T = (k, v, sub, c = '') => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
     const prem = st.net_premium;
-    body += `<div class="grid cols-2"><div class="card"><div class="chart-head"><h3>Payoff diagram (${UNI_LABEL[state.uni]}, ${state.meta.assumptions.option_horizon_days}-day expiry)</h3><span class="sub">theoretical Black-Scholes · IV = India VIX ${fmt.n(b.fit.vix, 1)}%</span></div><div class="chartbox"><canvas id="c-payoff" role="img" aria-label="Option payoff diagram"></canvas></div></div>
+    panels.push({
+      id: 'payoff', label: 'Payoff',
+      html: `<div class="grid cols-2"><div class="card"><div class="chart-head"><h3>Payoff at expiry (${state.meta.assumptions.option_horizon_days}d)</h3><span class="sub">Black-Scholes · IV = India VIX ${fmt.n(b.fit.vix, 1)}%</span></div><div class="chartbox"><canvas id="c-payoff" role="img" aria-label="Option payoff diagram"></canvas></div></div>
       <div class="card"><h3>Setup now</h3><div class="tiles compact">
         ${T(prem >= 0 ? 'Net debit' : 'Net credit', fmt.big(Math.abs(prem), 0), 'pts · ' + fmt.n(Math.abs(st.net_premium_pct), 2) + '% of spot')}
         ${T('Max profit', st.max_profit == null ? 'Unlimited' : fmt.big(st.max_profit), st.max_profit == null ? '' : 'pts · ' + fmt.n(st.max_profit / b.payoff.spot * 100, 2) + '% of spot', 'up')}
         ${T('Max loss', st.max_loss == null ? 'Unlimited' : (st.riskless ? 'None' : fmt.big(st.max_loss)), st.max_loss == null || st.riskless ? '' : 'pts · ' + fmt.n(st.max_loss / b.payoff.spot * 100, 2) + '% of spot', 'down')}
         ${T('Breakeven' + (st.breakevens.length > 1 ? 's' : ''), st.breakevens.length ? st.breakevens.map(x => fmt.big(x)).join('<br>') : '–')}
-        ${T('Prob. of profit', fmt.pct(st.pop, 0), 'risk-neutral lognormal')}
-        ${T('Delta', fmt.sn(st.delta), 'per unit of index')}
-        ${T('Gamma', fmt.sn(st.gamma, 3), 'Δ change per +1% move')}
-        ${T('Vega', fmt.sn(st.vega, 1), 'pts per vol point')}
-        ${T('Theta', fmt.sn(st.theta, 1), 'pts per day')}
-        ${T('IV rank', fmt.n(b.fit.iv_rank, 0) + '%', 'India VIX vs 1y range')}
-        ${T('Trend', esc(b.fit.trend), 'vs 50 / 200-day averages')}
-      </div></div></div>`;
-    body += (b.tables || []).map(t => renderTable(t)).join('');
-    body += `<div class="card"><div class="chart-head"><h3>Historical monthly-roll backtest</h3><span class="sub">${esc(b.curve_units || '')} · IV = India VIX at entry</span></div><div class="chartbox"><canvas id="c-eq"></canvas></div></div>
-      <div class="card"><h3>Backtest statistics</h3>${metricTiles(b)}</div>`;
+        ${T('Prob. of profit', fmt.pct(st.pop, 0), 'risk-neutral')}
+        ${T('Delta', fmt.sn(st.delta), 'per index unit')}
+      </div><details class="fold inner"><summary>Greeks &amp; regime</summary><div class="tiles compact">
+        ${T('Gamma', fmt.sn(st.gamma, 3), 'Δ per +1% move')}
+        ${T('Vega', fmt.sn(st.vega, 1), 'pts / vol point')}
+        ${T('Theta', fmt.sn(st.theta, 1), 'pts / day')}
+        ${T('IV rank', fmt.n(b.fit.iv_rank, 0) + '%', 'VIX vs 1y range')}
+        ${T('Trend', esc(b.fit.trend), 'vs 50/200-day avg')}
+      </div></details></div></div>`,
+      init: () => drawPayoff($('#c-payoff'), b.payoff),
+    });
+    if (b.tables?.length) panels.push({ id: 'legs', label: 'Legs', html: b.tables.map(t => renderTable(t, true, 12)).join('') });
+    if (b.curve) panels.push({ id: 'bt', label: 'Backtest', html: `<div class="stack">${eqCard(' · IV = India VIX at entry')}<div class="card"><h3>Backtest statistics</h3>${metricTiles(b)}</div></div>`, init: initEq });
   } else {
     if (b.curve) {
-      body += `<div class="grid cols-2"><div class="card"><div class="chart-head"><h3>Backtest</h3>
-        <div class="toggles">${/cumul/i.test(b.curve_units || '') ? '' : '<label><input type="checkbox" id="logscale"> Log scale</label>'}<span class="sub">${esc(b.curve_units || 'growth of 100')} · click legend to show/hide lines</span></div></div>
-        <div class="chartbox"><canvas id="c-eq" role="img" aria-label="Strategy equity curve"></canvas></div></div>
-        <div class="card"><h3>Performance</h3>${metricTiles(b, true)}</div></div>`;
+      panels.push({
+        id: 'perf', label: 'Performance',
+        html: `<div class="grid cols-2">${eqCard(' · click legend to show/hide lines')}<div class="card"><h3>Key metrics</h3>${metricTiles(b, true)}</div></div>`,
+        init: initEq,
+      });
     } else if (b.metrics) {
-      body += `<div class="card"><h3>Live metrics</h3>${metricTiles(b)}</div>`;
+      panels.push({ id: 'perf', label: 'Metrics', html: `<div class="card"><h3>Live metrics</h3>${metricTiles(b)}</div>` });
     }
-    (b.charts || []).forEach((c, k) => { body += `<div class="card"><div class="chart-head"><h3>${esc(c.title)}</h3></div><div class="chartbox sm"><canvas id="c-x${k}"></canvas></div></div>`; });
-    body += (b.tables || []).map(t => renderTable(t)).join('');
+    if (b.tables?.length) panels.push({ id: 'port', label: 'Portfolio', html: `<div class="stack">${b.tables.map(t => renderTable(t)).join('')}</div>` });
+    if (b.charts?.length) panels.push({
+      id: 'charts', label: 'Charts',
+      html: `<div class="stack">${b.charts.map((c, k) => `<div class="card"><div class="chart-head"><h3>${esc(c.title)}</h3></div><div class="chartbox sm"><canvas id="c-x${k}"></canvas></div></div>`).join('')}</div>`,
+      init: () => b.charts.forEach((c, k) => drawGeneric($('#c-x' + k), c)),
+    });
   }
-  if (b.notes?.length) body += `<div class="card"><h3>How it works &amp; caveats</h3><div class="notes">${b.notes.map(n => `<p>${esc(n)}</p>`).join('')}</div></div>`;
-  setView(head + `<div class="stack">${sigHTML}${body}</div>`);
+  if (b.notes?.length) panels.push({ id: 'how', label: 'How it works', html: `<div class="card"><h3>Method &amp; caveats</h3><div class="notes">${b.notes.map(n => `<p>${esc(n)}</p>`).join('')}</div></div>` });
 
-  // charts
-  const benchLabel = isOpt ? 'Index monthly % move (cumulative)' : `${UNI_LABEL[state.uni]} buy & hold`;
-  if (isOpt) drawPayoff($('#c-payoff'), b.payoff);
-  if (b.curve) {
-    const cv = $('#c-eq');
-    const neutral = isNum(b.metrics?.beta) && Math.abs(b.metrics.beta) < 0.3 && !isOpt;
-    let ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral });
-    const lg = $('#logscale');
-    if (lg) lg.addEventListener('change', () => { state.charts = state.charts.filter(c => c !== ch); ch.destroy(); ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral, log: lg.checked }); });
-  }
-  (b.charts || []).forEach((c, k) => drawGeneric($('#c-x' + k), c));
+  setView(head + `<div class="stack">${sigHTML}<div>${tabsHTML(panels)}</div></div>`);
+  if (panels.length) wireTabs(panels);
 }
 
 async function viewMarket() {
@@ -496,21 +560,23 @@ async function viewMarket() {
   stocks.forEach(s => (bySec[s.sector] ||= []).push(s));
   const heat = Object.keys(bySec).sort().map(sec => `<div class="sec-h">${esc(sec)}</div><div class="heat">${bySec[sec].sort((a, b) => b.chg_pct - a.chg_pct).map(s =>
     `<div class="hcell" style="background:${col(s.chg_pct)}" title="${esc(s.name)} · ${fmt.big(s.last, 2)}"><b>${esc(s.key)}</b><span>${fmt.spct(s.chg_pct, 2)}</span></div>`).join('')}</div>`).join('');
-  const sortKey = state.mktSort || { k: 'chg_pct', d: -1 };
-  state.mktSort = sortKey;
-  const draw = () => {
+  state.mktSort = state.mktSort || { k: 'chg_pct', d: -1 };
+  const drawStocks = () => {
     const { k, d } = state.mktSort;
     const rows = stocks.slice().sort((a, b) => { const x = a[k], y = b[k]; if (x == null) return 1; if (y == null) return -1; return typeof x === 'string' ? d * x.localeCompare(y) : d * (x - y); });
-    const th = (key, l, r) => `<th class="sortable ${r ? 'r' : ''}" data-k="${key}">${l}${k === key ? `<span class="arr">${d > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
-    $('#stk').innerHTML = `<thead><tr>${th('name', 'Stock')}${th('sector', 'Sector')}${th('last', 'Price (₹)', 1)}${th('chg_pct', '1D', 1)}${th('ret_1m', '1M', 1)}${th('ret_6m', '6M', 1)}${th('ret_1y', '1Y', 1)}${th('pb', 'P/B', 1)}${th('mcap', 'Mkt cap', 1)}</tr></thead><tbody>${rows.map(s =>
-      `<tr><td><b>${esc(s.name)}</b> <span class="muted">${esc(s.symbol)}</span></td><td>${esc(s.sector)}</td><td class="r">${fmt.big(s.last, 2)}</td>${[s.chg_pct, s.ret_1m, s.ret_6m, s.ret_1y].map(v => `<td class="r ${cls(v)}">${fmt.spct(v)}</td>`).join('')}<td class="r">${fmt.n(s.pb, 2)}</td><td class="r">${fmt.cr(s.mcap)}</td></tr>`).join('')}</tbody>`;
-    $$('#stk th.sortable').forEach(h => h.addEventListener('click', () => { const kk = h.dataset.k; state.mktSort = state.mktSort.k === kk ? { k: kk, d: -state.mktSort.d } : { k: kk, d: kk === 'name' || kk === 'sector' ? 1 : -1 }; draw(); }));
+    const th = (key, l, r, hm) => `<th class="sortable ${r ? 'r' : ''} ${hm ? 'hide-m' : ''}" data-k="${key}">${l}${k === key ? `<span class="arr">${d > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
+    $('#stk').innerHTML = `<thead><tr>${th('name', 'Stock')}${th('sector', 'Sector', 0, 1)}${th('last', 'Price ₹', 1)}${th('chg_pct', '1D', 1)}${th('ret_1m', '1M', 1)}${th('ret_6m', '6M', 1, 1)}${th('ret_1y', '1Y', 1, 1)}${th('pb', 'P/B', 1, 1)}${th('mcap', 'Mkt cap', 1, 1)}</tr></thead><tbody>${rows.map(s =>
+      `<tr><td><b>${esc(s.name)}</b> <span class="muted hide-m">${esc(s.symbol)}</span></td><td class="hide-m">${esc(s.sector)}</td><td class="r">${fmt.big(s.last, 2)}</td><td class="r ${cls(s.chg_pct)}">${fmt.spct(s.chg_pct)}</td><td class="r ${cls(s.ret_1m)}">${fmt.spct(s.ret_1m)}</td>
+      <td class="r hide-m ${cls(s.ret_6m)}">${fmt.spct(s.ret_6m)}</td><td class="r hide-m ${cls(s.ret_1y)}">${fmt.spct(s.ret_1y)}</td><td class="r hide-m">${fmt.n(s.pb, 2)}</td><td class="r hide-m">${fmt.cr(s.mcap)}</td></tr>`).join('')}</tbody>`;
+    $$('#stk th.sortable').forEach(h => h.addEventListener('click', () => { const kk = h.dataset.k; state.mktSort = state.mktSort.k === kk ? { k: kk, d: -state.mktSort.d } : { k: kk, d: kk === 'name' || kk === 'sector' ? 1 : -1 }; drawStocks(); }));
   };
-  setView(`<div class="page-head"><div><h1>Market now</h1><p>Latest Yahoo Finance bars (delayed) as of ${esc(state.meta.data_asof)}, refreshed by GitHub Actions every 30 minutes while the NSE is open.</p></div></div>
-    <div class="grid cols-3">${live.indices.map(card).join('')}</div>
-    <div class="card" style="margin-top:14px"><h3>${UNI_LABEL[state.uni]} constituents · today's move</h3>${heat}</div>
-    <div class="toolbar" style="margin-top:18px"><h2>Constituents</h2></div><div class="tbl-wrap"><table id="stk"></table></div>`);
-  draw();
+  const panels = [
+    { id: 'idx', label: 'Indexes', html: `<div class="grid cols-3">${live.indices.map(card).join('')}</div>` },
+    { id: 'heat', label: 'Heatmap', html: `<div class="card"><h3>${UNI_LABEL[state.uni]} constituents · today's move</h3>${heat}</div>` },
+    { id: 'stk', label: 'Stocks', html: `<div class="tbl-wrap"><div class="tbl-scroll"><table id="stk"></table></div></div>`, init: drawStocks },
+  ];
+  setView(`<div class="page-head"><div><h1>Market now</h1><p>Latest Yahoo Finance bars (delayed) as of ${esc(state.meta.data_asof)}, refreshed by GitHub Actions every 30 minutes while the NSE is open.</p></div></div>${tabsHTML(panels)}`);
+  wireTabs(panels);
 }
 
 function viewExcluded() {
@@ -523,32 +589,30 @@ function viewExcluded() {
   const blocks = Object.keys(byCh).map(Number).sort((a, b) => a - b).map(ch => {
     const its = byCh[ch], bad = its.filter(i => i.status === 'excluded'), n = its.length - bad.length;
     if (!bad.length) { full.push(`${ch}. ${chs[ch]} (${n})`); return ''; }
-    return `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:10px;flex-wrap:wrap"><h2>${ch}. ${esc(chs[ch])}</h2><span class="muted">${n ? `${n} applied · ` : ''}${bad.length} not applicable</span></div>
-      <div class="tbl-wrap small"><table><tbody>${bad.map(i => `<tr><td><span class="chip id">${i.id}</span></td><td class="wrap"><b>${esc(i.name)}</b></td><td class="wrap muted">${esc(i.reason)}</td></tr>`).join('')}</tbody></table></div></div>`;
+    return `<details class="fold"><summary>${ch}. ${esc(chs[ch])} <span class="muted">· ${bad.length} not applicable${n ? `, ${n} applied` : ''}</span></summary>
+      <div class="exlist">${bad.map(i => `<div class="exrow"><div><span class="chip id">${i.id}</span> <b>${esc(i.name)}</b></div><p>${esc(i.reason)}</p></div>`).join('')}</div></details>`;
   }).join('');
-  setView(`<div class="page-head"><div><h1>Not applicable</h1><p>The book covers ${total} sections across many asset classes. ${ex} cannot be run against the NIFTY 50 / SENSEX with Yahoo Finance data, so they are <b>not</b> included – each with the reason below. The other ${total - ex} are live${full.length ? ` (fully covered chapters: ${full.map(esc).join(', ')})` : ''}.</p></div></div>
-    <div class="legend"><span><span class="chip adapted">ADAPTED</span> method unchanged, factor set or asset adjusted to what exists for India</span><span><span class="chip proxy">PROXY DATA</span> a related series stands in for data Yahoo does not publish</span></div>
+  setView(`<div class="page-head"><div><h1>Not applicable</h1><p>The book covers ${total} sections. ${ex} cannot be run against the NIFTY 50 / SENSEX with Yahoo Finance data, so they are <b>not</b> included – each with its reason. The other ${total - ex} are live${full.length ? ` (fully covered: ${full.map(esc).join(', ')})` : ''}.</p></div></div>
+    <div class="legend"><span><span class="chip adapted">ADAPTED</span> method kept, factors/asset adjusted for India</span><span><span class="chip proxy">PROXY DATA</span> related series stands in for data Yahoo lacks</span></div>
     <div class="stack">${blocks}</div>`);
 }
 
 function viewAbout() {
   const m = state.meta, a = m.assumptions;
   const fails = m.failed_tickers?.length ? `<p class="err">Tickers Yahoo Finance did not return this run: ${m.failed_tickers.map(esc).join(', ')}.</p>` : '';
-  const errs = m.errors?.length ? `<p class="err">Module errors: ${m.errors.map(e => esc(e.module + '/' + e.universe + ': ' + e.error)).join('; ')}</p>` : '';
+  const errs = m.errors?.length ? `<p class="err">Strategy errors: ${m.errors.map(e => esc(e.module + '/' + e.universe + ': ' + e.error)).join('; ')}</p>` : '';
+  const sec = (title, html, open) => `<details class="fold" ${open ? 'open' : ''}><summary>${title}</summary><div class="notes pad">${html}</div></details>`;
   setView(`<div class="page-head"><div><h1>Method &amp; data</h1><p>How the numbers on this site are produced.</p></div></div>
   <div class="stack">
-    <div class="card"><h3>Pipeline</h3><div class="notes">
-      <p><b>Source:</b> Yahoo Finance via <code>yfinance</code> — daily adjusted OHLCV for ${m.universes.NIFTY50.constituents} NIFTY 50 and ${m.universes.SENSEX30.constituents} SENSEX stocks, both indexes, India VIX, NSE sector indexes and gold/silver/Nasdaq ETFs, plus P/B and market cap snapshots. About ${a.history_years} years of history.</p>
-      <p><b>Refresh:</b> a GitHub Actions workflow re-downloads everything every 30 minutes during NSE hours (and once after the close), recomputes every strategy and redeploys this site to GitHub Pages. The latest daily bar is the live, still-forming session bar while the market is open. Yahoo data is delayed.</p>
-      <p><b>Backtests:</b> positions are decided at a close and held from the next day. Cross-sectional portfolios use the top/bottom ${(a.xs_fraction * 100).toFixed(0)}% of names and are dollar-neutral where the book says so. Costs: ${a.cost_bps} bps one-way. No slippage, borrow, margin or tax. Everything is out-of-sample/walk-forward; fundamentals (P/B) have no history on Yahoo so Value is shown as a live ranking only.</p>
-      <p><b>Options:</b> Yahoo has no Indian index option chains, so every option strategy is priced with Black-Scholes using spot, a flat implied volatility equal to India VIX (also used for SENSEX), r = ${(a.risk_free * 100).toFixed(1)}% and dividend yield ${(a.dividend_yield * 100).toFixed(1)}%. Strikes are in multiples of 50 (NIFTY) / 100 (SENSEX); offsets are in units of about 1% of spot; expiry ${a.option_horizon_days} days (60 for the far leg of calendar/diagonal spreads). The historical backtest rolls each structure monthly. These are model prices, not tradable quotes.</p>
-      <p><b>Futures:</b> there are no index/stock futures prices on Yahoo, so hedging and futures strategies use the cash series as proxy (marked <span class="chip proxy">PROXY DATA</span>).</p>
-      <p><b>Universe:</b> constituent lists are a static snapshot in <code>pipeline/universe.py</code>; indexes are rebalanced twice a year, so edit that file when they change. Delisted/renamed tickers are skipped automatically.</p>
-    </div></div>
-    <div class="card"><h3>Run status</h3>
-      <dl class="kvlist"><dt>Generated</dt><dd>${esc(m.generated_at)}</dd><dt>Latest bar</dt><dd>${esc(m.data_asof)}</dd><dt>Strategies implemented</dt><dd>${m.counts.implemented}</dd>
-      <dt>of which adapted / proxy</dt><dd>${m.counts.adapted_or_proxy}</dd><dt>Not applicable</dt><dd>${m.counts.excluded}</dd><dt>Synthetic data?</dt><dd>${m.synthetic ? 'YES (test only)' : 'no'}</dd></dl>${fails}${errs}</div>
-    <div class="card"><h3>Disclaimer</h3><div class="notes"><p>This is an educational research project, not investment advice, and is not affiliated with the book's authors or any exchange. Simulated results are hypothetical; actual trading involves costs, taxes, liquidity limits and risks that are not captured. Shorting and derivatives can lose more than the capital invested.</p></div></div>
+    ${sec('Run status', `<dl class="kvlist"><dt>Generated</dt><dd>${esc(m.generated_at)}</dd><dt>Latest bar</dt><dd>${esc(m.data_asof)}</dd><dt>Strategies implemented</dt><dd>${m.counts.implemented}</dd>
+      <dt>of which adapted / proxy</dt><dd>${m.counts.adapted_or_proxy}</dd><dt>Not applicable</dt><dd>${m.counts.excluded}</dd><dt>Synthetic data?</dt><dd>${m.synthetic ? 'YES (test only)' : 'no'}</dd></dl>${fails}${errs}`, true)}
+    ${sec('Data & refresh', `<p><b>Source:</b> Yahoo Finance via <code>yfinance</code> — daily adjusted OHLCV for ${m.universes.NIFTY50.constituents} NIFTY 50 and ${m.universes.SENSEX30.constituents} SENSEX stocks, both indexes, India VIX, NSE sector indexes and gold/silver/Nasdaq ETFs, plus P/B and market cap snapshots (about ${a.history_years} years of history).</p>
+      <p><b>Refresh:</b> a GitHub Actions workflow re-downloads everything every 30 minutes during NSE hours (and once after the close), recomputes every strategy and redeploys to GitHub Pages. The latest daily bar is the still-forming session bar while the market is open. Yahoo data is delayed.</p>
+      <p><b>Universe:</b> constituent lists are a static snapshot in <code>pipeline/universe.py</code>; edit it when the indexes rebalance. Delisted or renamed tickers are skipped automatically.</p>`)}
+    ${sec('Backtest rules', `<p>Positions are decided at a close and held from the next day. Cross-sectional portfolios use the top/bottom ${(a.xs_fraction * 100).toFixed(0)}% of names and are dollar-neutral where the book says so. Costs: ${a.cost_bps} bps one-way. No slippage, borrow, margin or tax. Results are walk-forward; fundamentals (P/B) have no history on Yahoo so Value is a live ranking only.</p>`)}
+    ${sec('Options & futures', `<p><b>Options:</b> Yahoo has no Indian index option chains, so every option strategy is priced with Black-Scholes using spot, a flat implied volatility equal to India VIX (also used for SENSEX), r = ${(a.risk_free * 100).toFixed(1)}% and dividend yield ${(a.dividend_yield * 100).toFixed(1)}%. Strikes are multiples of 50 (NIFTY) / 100 (SENSEX); offsets are about 1% of spot; expiry ${a.option_horizon_days} days (60 for the far leg of calendar/diagonal spreads). The backtest rolls each structure monthly. These are model prices, not tradable quotes.</p>
+      <p><b>Futures:</b> no futures prices on Yahoo, so hedging and futures strategies use the cash series as proxy (marked <span class="chip proxy">PROXY DATA</span>).</p>`)}
+    ${sec('Disclaimer', `<p>Educational research project, not investment advice, and not affiliated with the book's authors or any exchange. Simulated results are hypothetical; real trading involves costs, taxes, liquidity limits and risks not captured here. Shorting and derivatives can lose more than the capital invested.</p>`)}
   </div>`);
 }
 
@@ -605,7 +669,13 @@ function setupPWA() {
 async function init() {
   setupChartDefaults();
   setupPWA();
-  $('#menu-btn').addEventListener('click', () => { const o = $('#nav').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded', o); });
+  $('#menu-btn').addEventListener('click', () => { const o = $('#nav').classList.toggle('open'); $('#scrim').hidden = !o; $('#menu-btn').setAttribute('aria-expanded', o); });
+  $('#scrim').addEventListener('click', closeMenu);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.show-all'); if (!b) return;
+    b.closest('.tbl-wrap').querySelectorAll('tr.more').forEach(r => { r.hidden = false; }); b.closest('.tbl-foot').remove();
+  });
   try {
     state.meta = await getJSON('meta', true);
     VERSION = state.meta.generated_at;
