@@ -20,11 +20,16 @@ CASH = "CASH"
 
 
 class Assets:
-    def __init__(self, md, mapping: dict, ctx: Ctx, min_days=500):
-        self.cols = [c for c in mapping if c in md.close.columns and md.close[c].notna().sum() >= min_days]
-        self.names = {c: mapping[c] for c in self.cols}
-        self.close = md.close[self.cols]
-        self.high, self.low = md.high[self.cols], md.low[self.cols]
+    def __init__(self, md, mapping: dict, ctx: Ctx, min_days=500, frames=None):
+        if frames is None:
+            self.cols = [c for c in mapping if c in md.close.columns and md.close[c].notna().sum() >= min_days]
+            self.names = {c: mapping[c] for c in self.cols}
+            self.close = md.close[self.cols]
+            self.high, self.low = md.high[self.cols], md.low[self.cols]
+        else:                                               # prebuilt frames (sector baskets)
+            self.close, self.high, self.low = frames
+            self.cols = list(self.close.columns)
+            self.names = {c: mapping[c] for c in self.cols}
         self.ret = self.close.pct_change(fill_method=None)
         self.dates = self.close.index
         self.ctx = ctx
@@ -311,11 +316,43 @@ def s4_6(ctx: Ctx, md, T=126, Tma=150):
 
 # ------------------------------------------------------------------------- driver
 
+def sector_baskets(ctx: Ctx, min_names=2):
+    """Equal-weight sector baskets of the universe's own constituents (always available from Yahoo).
+    Used because Yahoo no longer serves most NSE sector indices.  Returns (close, high, low), names."""
+    prev = ctx.close.shift(1)
+    close, high, low, names = {}, {}, {}, {}
+    for sec in ctx.sector_names:
+        keys = [k for k in ctx.keys if ctx.sector[k] == sec]
+        if len(keys) < min_names:
+            continue
+        r = ctx.ret[keys].mean(axis=1, skipna=True)
+        px = 100 * (1 + r.fillna(0)).cumprod()
+        h_rel = (ctx.high[keys] / prev[keys]).mean(axis=1, skipna=True)
+        l_rel = (ctx.low[keys] / prev[keys]).mean(axis=1, skipna=True)
+        pp = px.shift(1)
+        code = U.sector_name(sec)
+        close[code] = px
+        high[code] = pd.concat([pp * h_rel, px], axis=1).max(axis=1)
+        low[code] = pd.concat([pp * l_rel, px], axis=1).min(axis=1)
+        names[code] = code + " (basket)"
+    return (pd.DataFrame(close), pd.DataFrame(high), pd.DataFrame(low)), names
+
+
 def run(ctx: Ctx, md):
+    import logging
+    log = logging.getLogger("pipeline")
     ac = Assets(md, U.SECTOR_INDICES, ctx)
+    log.info("sector indices usable (%d/%d): %s", ac.n, len(U.SECTOR_INDICES), ", ".join(ac.cols))
+    basket_note = None
+    if ac.n < 6:
+        frames, names = sector_baskets(ctx)
+        ac = Assets(md, names, ctx, frames=frames)
+        basket_note = ("Yahoo Finance no longer serves most NSE sector indices, so each sector is an equal-weight basket of the "
+                       f"{ctx.idx_name} constituents in that sector (sectors defined in universe.py).")
+        log.info("using %d constituent sector baskets: %s", ac.n, ", ".join(ac.cols))
     out = {}
     if ac.n < 6:
-        msg = {"notes": [f"Only {ac.n} sector indices could be downloaded from Yahoo Finance – not enough to rank sectors."]}
+        msg = {"notes": [f"Only {ac.n} sectors available \u2013 not enough to rank sectors."]}
         for sid, nm in (("4.1", "Sector momentum rotation"), ("4.1.1", "Sector momentum rotation with MA filter"),
                         ("4.1.2", "Dual-momentum sector rotation"), ("4.2", "Alpha rotation"), ("4.3", "R-squared"), ("4.4", "Mean-reversion")):
             out[sid] = entry(sid, nm, CAT, "Sector rotation strategy.", dict(msg))
@@ -323,6 +360,9 @@ def run(ctx: Ctx, md):
         for fn, sid, nm in ((s4_1, "4.1", "Sector momentum rotation"), (s4_1_1, "4.1.1", "Sector momentum rotation with MA filter"),
                             (s4_1_2, "4.1.2", "Dual-momentum sector rotation"), (s4_2, "4.2", "Alpha rotation"),
                             (s4_3, "4.3", "R-squared"), (s4_4, "4.4", "Mean-reversion")):
-            out[sid] = guarded(fn, sid, nm, CAT, ac)
+            e = guarded(fn, sid, nm, CAT, ac)
+            if basket_note and e["block"].get("notes") is not None:
+                e["block"]["notes"].append(basket_note)
+            out[sid] = e
     out["4.6"] = guarded(s4_6, "4.6", "Multi-asset trend following", CAT, ctx, md)
     return out

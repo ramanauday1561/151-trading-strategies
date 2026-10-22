@@ -212,13 +212,18 @@ def main(argv=None):
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
-    warnings.filterwarnings("ignore", category=FutureWarning)
+    warnings.simplefilter("ignore")                       # yfinance floods the log with pandas deprecation warnings
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     out = Path(args.out)
     only = {x for x in args.only.split(",") if x}
 
     t0 = time.time()
     md = D.synthetic_market() if args.synthetic else D.fetch_live(with_fundamentals=not args.no_fundamentals)
+    if md.failures:
+        msg = f"Yahoo returned no usable data for {len(md.failures)} symbols: {', '.join(md.failures)}"
+        log.warning(msg)
+        print(f"::warning title=Yahoo symbols failed::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg)
+    log.info("symbols resolved to other candidates: %s", md.symbol_used and {k: v for k, v in md.symbol_used.items() if v != U.STOCKS[k][1][0]})
     problems = check_universe_coverage(md)
     if problems and not args.synthetic:
         log.error("data coverage too low, refusing to publish: %s", problems)
@@ -232,6 +237,12 @@ def main(argv=None):
     else:
         n_excl = len(R.excluded_entries())
     collect_errors(strategies, errors)
+    empty = [f"{sid}/{u}" for sid, st in strategies.items() for u, b in st["universes"].items()
+             if not b.get("error") and not (b.get("signal") or b.get("metrics") or b.get("curve"))]
+    if empty:
+        msg = f"{len(empty)} strategy results came back empty (not enough data): {', '.join(empty)}"
+        log.warning(msg)
+        print(f"::warning title=Empty strategy results::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg)
 
     # category files
     for cat, label, blurb in CATEGORIES:
