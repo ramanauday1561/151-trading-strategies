@@ -323,9 +323,10 @@ function renderChrome() {
   $('#status').innerHTML = `<span class="dot ${open ? '' : 'off'}"></span><span title="Latest bar: ${esc(m.data_asof)}">${open ? 'NSE open' : 'NSE closed'} · updated ${ago(m.generated_at)}</span>`;
   const cats = m.categories;
   const cur = location.hash;
-  const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
+  const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#' || cur === '#/signal')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
   $('#nav').innerHTML = `
-    ${link('#/', 'Signal board', m.counts.implemented)}
+    ${link('#/', 'Signal (CALL / PUT)')}
+    ${link('#/board', 'Strategy board', m.counts.implemented)}
     ${link('#/play', "Today's playbook")}
     ${link('#/now', 'Working now')}
     ${link('#/market', 'Market now')}
@@ -336,7 +337,8 @@ function renderChrome() {
     ${link('#/about', 'Method & data')}`;
   $('#nav').insertAdjacentHTML('beforeend', `<div class="navfoot">${$('#status').innerHTML}<br>Latest bar: ${esc(m.data_asof)}</div>`);
   $$('#nav a').forEach(a => a.addEventListener('click', () => closeMenu()));
-  const r = location.hash.replace(/^#\/?/, '').split('/')[0] || 'home';
+  let r = location.hash.replace(/^#\/?/, '').split('/')[0] || 'home';
+  if (r === 'signal') r = 'home';
   $$('#tabbar a[data-r]').forEach(a => { if (a.dataset.r === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const mb = $('#menu-btn'); if (['c', 's', 'excluded'].includes(r)) mb.setAttribute('aria-current', 'page'); else mb.removeAttribute('aria-current');
 }
@@ -708,6 +710,87 @@ async function viewPlay() {
   wireTabs(panels);
 }
 
+
+// ------------------------------------------------------------------ Signal: one of CALL / PUT / HOLD / SELL / NOTHING
+const VERDICTS = {
+  CALL: { cls: 'up', line: 'Buy a call option', sub: 'Strategies lean clearly bullish.' },
+  PUT: { cls: 'down', line: 'Buy a put option', sub: 'Strategies lean clearly bearish.' },
+  HOLD: { cls: 'mix', line: 'Hold what you have', sub: 'Mildly bullish: keep existing long positions, do not add.' },
+  SELL: { cls: 'warn', line: 'Sell / reduce longs', sub: 'Mildly bearish: exit or cut long positions, avoid new buys.' },
+  NOTHING: { cls: 'flat', line: 'Do nothing', sub: 'Signals disagree or there is no edge. Stay out.' },
+};
+function computeVerdict() {
+  const get = id => { const s = state.byId[id]; return s ? { s, b: blockOf(s) } : null; };
+  const idx = (state.live?.indices || []).find(i => i.name === UNI_LABEL[state.uni]);
+  const vix = (state.live?.indices || []).find(i => i.symbol === '^INDIAVIX');
+  const votes = [];
+  const add = (name, v, w, id = '') => { if (isNum(v)) votes.push({ id, name, v: Math.max(-1, Math.min(1, v)), w }); };
+  const adj = x => ({ working: 1, mixed: 0.75, struggling: 0.5 }[recent(x.s, x.b)?.st] ?? 0.75);
+  const sgn = b => (b === 'long' ? 1 : b === 'short' ? -1 : 0);
+  // index-level strategies
+  ['3.11', '3.12', '3.13', '3.14', '3.15', '3.17', '18.2'].forEach(id => {
+    const x = get(id); if (x?.b && !x.b.error && x.b.signal) add(x.s.name, sgn(x.b.signal.bias), adj(x), id);
+  });
+  // breadth: how many constituents the moving-average rules hold long
+  const br = ['3.11', '3.13'].map(id => get(id)?.b?.signal?.label?.match(/(\d+) of (\d+) stocks long/)).filter(Boolean).map(m => +m[1] / +m[2]);
+  if (br.length) add(`Breadth (${Math.round(br.reduce((a, b) => a + b, 0) / br.length * 100)}% of stocks above their trend)`, (br.reduce((a, b) => a + b, 0) / br.length - 0.5) * 2, 1.5);
+  // risk-on / risk-off, trend-following portfolio, volatility targeting
+  const d = get('4.1.2')?.b?.signal?.detail || '';
+  if (/RISK-ON/.test(d)) add('Dual momentum: risk-on', 1, 1, '4.1.2'); else if (/RISK-OFF/.test(d)) add('Dual momentum: risk-off', -1, 1, '4.1.2');
+  const vt = get('6.5')?.b?.signal?.label?.match(/(\d+)%/);
+  if (vt) add(`Volatility targeting holds ${vt[1]}% index`, (+vt[1] - 60) / 40, 1, '6.5');
+  // price regime
+  if (isNum(idx?.vs_dma200)) add('Price vs 200-day average', idx.vs_dma200 > 0 ? 1 : -1, 1.5);
+  if (isNum(idx?.vs_dma50)) add('Price vs 50-day average', idx.vs_dma50 > 0 ? 1 : -1, 1);
+  if (isNum(idx?.ret_1m)) add('Last 21 days return', idx.ret_1m > 0.01 ? 1 : idx.ret_1m < -0.01 ? -1 : 0, 1);
+  const W = votes.reduce((a, v) => a + v.w, 0);
+  const score = W ? votes.reduce((a, v) => a + v.v * v.w, 0) / W * 100 : 0;
+  const bull = votes.filter(v => v.v > 0.2).length, bear = votes.filter(v => v.v < -0.2).length;
+  const vp = vix?.pctile_1y;
+  let verdict = score >= 40 ? 'CALL' : score >= 15 ? 'HOLD' : score > -15 ? 'NOTHING' : score > -40 ? 'SELL' : 'PUT';
+  let note = '';
+  if (verdict === 'CALL' && isNum(vp) && vp >= 0.85) { verdict = 'HOLD'; note = `India VIX is at the ${Math.round(vp * 100)}th percentile, so options are expensive: hold instead of buying calls.`; }
+  // option quote for CALL / PUT from the ATM straddle legs
+  let quote = null;
+  const st = get('2.22')?.b;
+  const legs = st?.tables?.[0]?.rows || [];
+  const leg = legs.find(r => r[0] === (verdict === 'PUT' ? 'Put' : 'Call'));
+  if (leg && (verdict === 'CALL' || verdict === 'PUT')) quote = { strike: leg[2], expiry: leg[3], premium: leg[5], delta: leg[6], spot: st.payoff?.spot };
+  return { verdict, score, votes, bull, bear, flat: votes.length - bull - bear, note, quote, vixPct: vp, W };
+}
+async function viewSignal() {
+  setView(loadingHTML);
+  await loadAll();
+  const r = computeVerdict();
+  const V = VERDICTS[r.verdict];
+  const open = nseOpen();
+  const m = state.meta;
+  const ageMin = (Date.now() - Date.parse(m.generated_at)) / 60000;
+  const stale = open && ageMin > 45;
+  const lab = ['PUT', 'SELL', 'NOTHING', 'HOLD', 'CALL'];
+  const pos = (r.score + 100) / 2;
+  const conf = Math.abs(r.score) >= 55 ? 'strong' : Math.abs(r.score) >= 30 ? 'moderate' : 'weak';
+  const sorted = r.votes.slice().sort((a, b) => b.v * b.w - a.v * a.w);
+  const quote = r.quote ? `<div class="card" style="margin-top:12px"><h3>${r.verdict === 'CALL' ? 'Call' : 'Put'} to look at</h3>
+      <div class="tiles"><div class="tile"><div class="k">Strike (ATM)</div><div class="v">${esc(r.quote.strike)}</div></div><div class="tile"><div class="k">Expiry</div><div class="v">${esc(r.quote.expiry)}</div></div>
+      <div class="tile"><div class="k">Model premium</div><div class="v">${esc(r.quote.premium)}</div><div class="s">points, theoretical</div></div><div class="tile"><div class="k">Delta</div><div class="v">${esc(r.quote.delta)}</div></div></div>
+      <p class="muted" style="font-size:12.5px;margin-top:8px">Model price from India VIX, not a market quote: check the real option chain. A defined-risk alternative is the <a href="#/s/${r.verdict === 'CALL' ? '2.6' : '2.9'}">${r.verdict === 'CALL' ? 'bull call spread' : 'bear put spread'}</a>.</p></div>` : '';
+  setView(`
+    <div class="page-head"><div><h1>Signal · ${UNI_LABEL[state.uni]}</h1>
+      <p class="fresh">${stale ? '<span class="down">Refresh is running late, the signal may lag. </span>' : ''}<span class="muted">Based on daily bars through ${esc(m.data_asof)}${open ? ' (today’s bar is still forming)' : ''}, computed ${ago(m.generated_at)}.</span></p></div></div>
+    <div class="verdict ${V.cls}"><div class="vk">${UNI_LABEL[state.uni]} today</div><div class="vw">${r.verdict}</div><div class="vl">${V.line}</div><div class="vs">${esc(r.note || V.sub)}</div></div>
+    <div class="vstrip" role="img" aria-label="Signal scale from PUT to CALL">${lab.map(l => `<span class="${l === r.verdict ? 'on ' + VERDICTS[l].cls : ''}">${l}</span>`).join('')}</div>
+    <div class="vgauge"><i style="left:${pos}%"></i></div>
+    <p class="muted" style="font-size:13px;margin:8px 0 14px;text-align:center">Score ${fmt.sn(r.score, 0)} of ±100 · ${conf} · ${r.bull} bullish, ${r.bear} bearish, ${r.flat} neutral of ${r.votes.length} signals</p>
+    ${quote}
+    <details class="fold" style="margin-top:14px"><summary>Why: the ${r.votes.length} signals behind it</summary>
+      <div class="stack" style="gap:8px;padding:4px 0 8px">${sorted.map(v => `<${v.id ? `a href="#/s/${v.id}"` : 'div'} class="mrow"><span>${v.id ? `<span class="chip id">${v.id}</span> ` : ''}${esc(v.name)}</span>${biasChip(v.v > 0.2 ? 'long' : v.v < -0.2 ? 'short' : 'neutral')}</${v.id ? 'a' : 'div'}>`).join('')}</div></details>
+    <details class="fold" style="margin-top:10px"><summary>What the five answers mean</summary><div class="notes pad">
+      <p><b>CALL</b> score ≥ +40: buy a call option.</p><p><b>HOLD</b> +15 to +40: keep longs, do not add.</p><p><b>NOTHING</b> −15 to +15: no trade.</p><p><b>SELL</b> −40 to −15: sell or reduce longs.</p><p><b>PUT</b> ≤ −40: buy a put option.</p>
+      <p>The score is the weighted average of every signal (index trend rules, breadth, KNN, neural net, dual momentum, volatility targeting, price vs 50/200-day and 21-day trend), each weighted less if that strategy has been struggling lately. It is recomputed whenever the data refreshes, so it updates after the market opens.</p></div></details>
+    <p class="muted" style="font-size:12px;margin-top:14px">Educational output of backtested rules, not investment advice. Many signals are variants of the same trend idea, so agreement is weaker evidence than it looks. Options can lose their full premium.</p>`);
+}
+
 async function viewMarket() {
   const live = state.live;
   if (!live) { setView('<p class="err">Live snapshot unavailable.</p>'); return; }
@@ -794,7 +877,8 @@ async function route() {
   const h = location.hash.replace(/^#\/?/, '');
   const [a, b] = h.split('/');
   try {
-    if (!a) await viewOverview();
+    if (!a || a === 'signal') await viewSignal();
+    else if (a === 'board') await viewOverview();
     else if (a === 'play') await viewPlay();
     else if (a === 'now') await viewNow();
     else if (a === 'market') await viewMarket();

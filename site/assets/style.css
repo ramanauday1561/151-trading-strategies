@@ -398,3 +398,18 @@ details.fold + .toolbar, details.fold + .grid { margin-top: 12px; }
 .prow { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
 .prow:first-child { border-top: 0; }
 .plist { margin-top: 6px; }
+
+/* Signal page */
+.verdict { text-align: center; padding: 26px 16px 22px; border-radius: 18px; border: 1px solid var(--border-2); background: linear-gradient(180deg, var(--surface-2), var(--bg-2)); }
+.verdict .vk { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+.verdict .vw { font-size: clamp(54px, 18vw, 96px); font-weight: 800; letter-spacing: -.03em; line-height: 1.05; margin: 6px 0 2px; }
+.verdict .vl { font-size: 18px; font-weight: 650; } .verdict .vs { color: var(--text-2); font-size: 13.5px; margin-top: 4px; }
+.verdict.up { border-color: rgba(52,211,153,.5); box-shadow: 0 0 40px rgba(52,211,153,.12); } .verdict.up .vw { color: var(--up); }
+.verdict.down { border-color: rgba(248,113,113,.5); box-shadow: 0 0 40px rgba(248,113,113,.12); } .verdict.down .vw { color: var(--down); }
+.verdict.mix .vw { color: var(--blue); } .verdict.warn .vw { color: var(--amber); } .verdict.flat .vw { color: var(--text-2); }
+.vstrip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 14px; }
+.vstrip span { text-align: center; padding: 8px 0; border-radius: 10px; font-weight: 700; font-size: 12.5px; color: var(--muted); border: 1px solid var(--border); background: var(--surface); }
+.vstrip span.on { color: #04110e; border-color: transparent; }
+.vstrip span.on.up { background: var(--up); } .vstrip span.on.down { background: var(--down); } .vstrip span.on.mix { background: var(--blue); } .vstrip span.on.warn { background: var(--amber); } .vstrip span.on.flat { background: var(--text-2); }
+.vgauge { position: relative; height: 6px; margin: 12px 4px 0; border-radius: 4px; background: linear-gradient(90deg, var(--down), var(--amber) 30%, var(--border-2) 50%, var(--blue) 70%, var(--up)); }
+.vgauge i { position: absolute; top: -5px; width: 4px; height: 16px; border-radius: 2px; background: #fff; transform: translateX(-2px); box-shadow: 0 0 0 2px var(--bg); }
