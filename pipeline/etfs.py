@@ -313,6 +313,8 @@ def s4_6(ctx: Ctx, md, T=126, Tma=150):
 
 def run(ctx: Ctx, md):
     ac = Assets(md, U.SECTOR_INDICES, ctx)
+    import logging
+    logging.getLogger("pipeline").info("sector indices usable (%d/%d): %s", ac.n, len(U.SECTOR_INDICES), ", ".join(ac.cols))
     out = {}
     if ac.n < 6:
         msg = {"notes": [f"Only {ac.n} sector indices could be downloaded from Yahoo Finance – not enough to rank sectors."]}
