@@ -574,7 +574,7 @@ async function viewNow() {
   const sortR = a => a.slice().sort((x, y) => (x.r.unit === '%' ? 0 : 1) - (y.r.unit === '%' ? 0 : 1) || y.r.m1 - x.r.m1);
   const row = x => `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${statusChip(x.s)}</div>
     <div class="l2">${x.b.signal ? biasChip(x.b.signal.bias) : ''}<span>${esc(x.b.signal?.label || '')}</span></div>
-    <div class="l3"><span><i>Last month</i><b class="${cls(x.r.m1)}">${fmt.sn(x.r.m1, 1)}${x.r.unit}</b></span><span><i>Last 3 months</i><b class="${cls(x.r.m3)}">${fmt.sn(x.r.m3, 1)}${x.r.unit}</b></span><span><i>Category</i><b>${esc(state.meta.categories.find(c => c.id === x.s.category).label)}</b></span></div></a>`;
+    <div class="l3"><span><i>Last 21 days</i><b class="${cls(x.r.m1)}">${fmt.sn(x.r.m1, 1)}${x.r.unit}</b></span><span><i>Last 3 months</i><b class="${cls(x.r.m3)}">${fmt.sn(x.r.m3, 1)}${x.r.unit}</b></span><span><i>Category</i><b>${esc(state.meta.categories.find(c => c.id === x.s.category).label)}</b></span></div></a>`;
   const listHTML = (id, arr, empty) => `<div class="blist" id="${id}"></div><div class="center" id="${id}-more"></div>${arr.length ? '' : `<p class="empty">${empty}</p>`}`;
   const W = sortR(by('working')), S = sortR(by('struggling')).reverse().sort((a, b) => a.r.m1 - b.r.m1), O = list.filter(x => x.s.category === 'options' && x.b.fit?.label === 'favourable');
   const panels = [
@@ -582,10 +582,10 @@ async function viewNow() {
     { id: 's', label: `Struggling (${S.length})`, html: listHTML('ls', S, 'Nothing is negative over both horizons.'), init: () => paged('ls', S, row) },
     { id: 'o', label: `Option fit (${O.length})`, html: listHTML('lo', O, 'No option structure is flagged favourable by today\'s regime.'), init: () => paged('lo', O, x => row(x).replace('</div></a>', `<span class="muted" style="font-size:12px">${esc(x.b.fit.why)}</span></div></a>`)) },
   ];
-  setView(`<div class="page-head"><div><h1>Working now · ${UNI_LABEL[state.uni]}</h1><p>Which strategies the current market is rewarding. Each strategy is re-run on the latest data; “working” means it made money over both the last month and the last 3 months. It describes the recent past, not a forecast.</p></div></div>
+  setView(`<div class="page-head"><div><h1>Working now · ${UNI_LABEL[state.uni]}</h1><p class="fresh">${freshness()}</p><p>Which strategies the current market is rewarding. Each strategy is re-run on the latest data; “working” means it made money over both the last 21 trading days and the last 63 (3 months). It describes the recent past, not a forecast.</p></div></div>
     <div class="card" style="margin-bottom:14px"><h3>Market regime</h3>
       <div class="tiles" style="margin:10px 0"><div class="tile"><div class="k">${UNI_LABEL[state.uni]} trend</div><div class="v ${trend === 'Uptrend' ? 'up' : trend === 'Downtrend' ? 'down' : ''}" style="font-size:15px">${trend}</div><div class="s">vs 50 / 200-day: ${isNum(idx?.vs_dma50) ? fmt.spct(idx.vs_dma50) : '–'} / ${isNum(idx?.vs_dma200) ? fmt.spct(idx.vs_dma200) : '–'}</div></div>
-      <div class="tile"><div class="k">Last month</div><div class="v ${cls(idx?.ret_1m)}">${fmt.spct(idx?.ret_1m)}</div></div>
+      <div class="tile"><div class="k">Last 21 days</div><div class="v ${cls(idx?.ret_1m)}">${fmt.spct(idx?.ret_1m)}</div></div>
       <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 1) : '–'}</div><div class="s">${isNum(vp) ? fmt.n(vp * 100, 0) + 'th pctile · ' + volr : ''}</div></div>
       <div class="tile"><div class="k">Working / struggling</div><div class="v"><span class="up">${W.length}</span> <span class="muted">/</span> <span class="down">${S.length}</span></div><div class="s">${by('mixed').length} mixed</div></div></div>
       <p class="muted" style="font-size:13px">${esc(read)}</p></div>${tabsHTML(panels)}`);
@@ -639,7 +639,7 @@ async function viewMarket() {
     { id: 'heat', label: 'Heatmap', html: `<div class="card"><h3>${UNI_LABEL[state.uni]} constituents · today's move</h3>${heat}</div>` },
     { id: 'stk', label: 'Stocks', html: `<div class="tbl-wrap"><div class="tbl-scroll"><table id="stk"></table></div></div>`, init: drawStocks },
   ];
-  setView(`<div class="page-head"><div><h1>Market now</h1><p>Latest Yahoo Finance bars (delayed) as of ${esc(state.meta.data_asof)}, refreshed by GitHub Actions every 30 minutes while the NSE is open.</p></div></div>${tabsHTML(panels)}`);
+  setView(`<div class="page-head"><div><h1>Market now</h1><p>Latest Yahoo Finance bars (delayed) as of ${esc(state.meta.data_asof)}, refreshed by GitHub Actions every 10 minutes while the NSE is open.</p></div></div>${tabsHTML(panels)}`);
   wireTabs(panels);
 }
 
@@ -671,7 +671,7 @@ function viewAbout() {
     ${sec('Run status', `<dl class="kvlist"><dt>Generated</dt><dd>${esc(m.generated_at)}</dd><dt>Latest bar</dt><dd>${esc(m.data_asof)}</dd><dt>Strategies implemented</dt><dd>${m.counts.implemented}</dd>
       <dt>of which adapted / proxy</dt><dd>${m.counts.adapted_or_proxy}</dd><dt>Not applicable</dt><dd>${m.counts.excluded}</dd><dt>Synthetic data?</dt><dd>${m.synthetic ? 'YES (test only)' : 'no'}</dd></dl>${fails}${errs}`, true)}
     ${sec('Data & refresh', `<p><b>Source:</b> Yahoo Finance via <code>yfinance</code> — daily adjusted OHLCV for ${m.universes.NIFTY50.constituents} NIFTY 50 and ${m.universes.SENSEX30.constituents} SENSEX stocks, both indexes, India VIX, NSE sector indexes and gold/silver/Nasdaq ETFs, plus P/B and market cap snapshots (about ${a.history_years} years of history).</p>
-      <p><b>Refresh:</b> a GitHub Actions workflow re-downloads everything every 30 minutes during NSE hours (and once after the close), recomputes every strategy and redeploys to GitHub Pages. The latest daily bar is the still-forming session bar while the market is open. Yahoo data is delayed.</p>
+      <p><b>Refresh:</b> a GitHub Actions workflow re-downloads everything every 10 minutes during NSE hours (and once after the close), recomputes every strategy and redeploys to GitHub Pages. The latest daily bar is the still-forming session bar while the market is open. Yahoo data is delayed.</p>
       <p><b>Universe:</b> constituent lists are a static snapshot in <code>pipeline/universe.py</code>; edit it when the indexes rebalance. Delisted or renamed tickers are skipped automatically.</p>`)}
     ${sec('Backtest rules', `<p>Positions are decided at a close and held from the next day. Cross-sectional portfolios use the top/bottom ${(a.xs_fraction * 100).toFixed(0)}% of names and are dollar-neutral where the book says so. Costs: ${a.cost_bps} bps one-way. No slippage, borrow, margin or tax. Results are walk-forward; fundamentals (P/B) have no history on Yahoo so Value is a live ranking only.</p>`)}
     ${sec('Options & futures', `<p><b>Options:</b> Yahoo has no Indian index option chains, so every option strategy is priced with Black-Scholes using spot, a flat implied volatility equal to India VIX (also used for SENSEX), r = ${(a.risk_free * 100).toFixed(1)}% and dividend yield ${(a.dividend_yield * 100).toFixed(1)}%. Strikes are multiples of 50 (NIFTY) / 100 (SENSEX); offsets are about 1% of spot; expiry ${a.option_horizon_days} days (60 for the far leg of calendar/diagonal spreads). The backtest rolls each structure monthly. These are model prices, not tradable quotes.</p>
@@ -701,7 +701,34 @@ async function route() {
   }
 }
 
-// ------------------------------------------------------------------ PWA: install, share, offline
+
+// ---- data freshness + best-effort live quotes straight from Yahoo (falls back silently if the browser is blocked)
+function freshness() {
+  const m = state.meta, open = nseOpen();
+  const age = (Date.now() - Date.parse(m.generated_at)) / 60000;
+  const q = (state.live?.indices || []).find(i => i.quote_time);
+  const stale = open && age > 45;
+  return `<span class="${stale ? 'down' : 'muted'}">Strategies computed ${ago(m.generated_at)} from daily bars through ${esc(m.data_asof)}${q ? ` · index quotes as of ${esc(q.quote_time)} IST` : ''}${state.liveQuotes ? ' · <b class="up">live prices on</b>' : ''}.${stale ? ' The refresh is running late; GitHub schedules can lag.' : ''}</span>`;
+}
+async function refreshQuotes() {
+  if (!state.live) return;
+  let ok = false;
+  await Promise.all(state.live.indices.map(async i => {
+    try {
+      const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(i.symbol)}?range=1d&interval=1m`, { cache: 'no-store' });
+      if (!r.ok) return;
+      const meta = (await r.json())?.chart?.result?.[0]?.meta;
+      if (!meta || !isNum(meta.regularMarketPrice) || !isNum(meta.chartPreviousClose)) return;
+      i.last = meta.regularMarketPrice; i.prev = meta.chartPreviousClose; i.chg = i.last - i.prev; i.chg_pct = i.last / i.prev - 1;
+      if (isNum(meta.regularMarketTime)) i.quote_time = new Date(meta.regularMarketTime * 1000).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+      ok = true;
+    } catch (e) { /* CORS or network: keep the snapshot */ }
+  }));
+  state.liveQuotes = ok;
+  if (ok) renderChrome();
+}
+
+// ------------------------------------------------------------------ PWA: install, offline
 let deferredInstall = null;
 function toast(msg) {
   const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
@@ -717,13 +744,6 @@ function setupPWA() {
   inst.addEventListener('click', async () => {
     if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; inst.hidden = true; }
     else toast('On iPhone/iPad: tap the Share icon in Safari, then “Add to Home Screen”.');
-  });
-  $('#share-btn').addEventListener('click', async () => {
-    const data = { title: '151 Trading Strategies · NIFTY & SENSEX', text: document.title, url: location.href };
-    try {
-      if (navigator.share) await navigator.share(data);
-      else { await navigator.clipboard.writeText(location.href); toast('Link copied'); }
-    } catch (e) { if (e.name !== 'AbortError') toast('Could not share – copy the address bar link instead'); }
   });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('service worker failed', e));
@@ -753,6 +773,8 @@ async function init() {
   }
   window.addEventListener('hashchange', route);
   route();
+  refreshQuotes();
+  setInterval(() => { if (nseOpen()) refreshQuotes(); }, 60000);
   setInterval(() => { if (state.meta) { renderChrome(); } }, 60000);
 }
 init();

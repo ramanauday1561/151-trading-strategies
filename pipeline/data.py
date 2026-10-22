@@ -122,7 +122,8 @@ def _fetch_intraday(symbols=("^NSEI", "^BSESN", "^INDIAVIX")) -> dict:
                 continue
             close = d["Close"].iloc[:, 0] if isinstance(d.columns, pd.MultiIndex) else d["Close"]
             close = close.dropna()
-            out[sym] = {"t": [t.strftime("%H:%M") for t in close.index], "c": [round(float(v), 2) for v in close.values]}
+            out[sym] = {"t": [t.strftime("%H:%M") for t in close.index], "c": [round(float(v), 2) for v in close.values],
+                        "stamp": close.index[-1].strftime("%Y-%m-%d %H:%M")}
         except Exception as exc:
             log.warning("intraday %s failed: %r", sym, exc)
     return out

@@ -1,6 +1,6 @@
 # 151 Trading Strategies × NIFTY 50 & SENSEX
 
-A dark-mode dashboard that runs the strategies from *151 Trading Strategies* (Z. Kakushadze & J. A. Serur, SSRN 3247865) against the **NIFTY 50** and **SENSEX** using **Yahoo Finance** data. A **GitHub Actions** workflow refreshes everything every 30 minutes during NSE hours and deploys it to **GitHub Pages**.
+A dark-mode dashboard that runs the strategies from *151 Trading Strategies* (Z. Kakushadze & J. A. Serur, SSRN 3247865) against the **NIFTY 50** and **SENSEX** using **Yahoo Finance** data. A **GitHub Actions** workflow refreshes everything every 10 minutes during NSE hours and deploys it to **GitHub Pages**.
 
 * **94 strategies live** – 58 option structures, 18 stock strategies, 7 sector/multi-asset, 3 index, 3 volatility, 4 futures/hedging, 1 neural-net (adapted from crypto).
 * **82 book sections excluded** (fixed income, FX, commodities, structured credit, real estate, …, or anything needing data Yahoo does not carry). Each has its reason on the site's *Not applicable* page; `pipeline/registry.py` makes sure no section is silently dropped.
