@@ -1,0 +1,51 @@
+name: Refresh & Deploy
+
+# Re-downloads Yahoo Finance data, recomputes every strategy and redeploys the site to GitHub Pages.
+# NSE trades 09:15-15:30 IST = 03:45-10:00 UTC, Mon-Fri.
+on:
+  schedule:
+    - cron: "*/30 3-10 * * 1-5"   # every 30 min across the NSE session
+    - cron: "30 12 * * 1-5"       # after the close (18:00 IST) once Yahoo has the final bars
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["pipeline/**", "site/**", "requirements.txt", ".github/workflows/deploy.yml"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Tests (a broken change must never reach the live site)
+        run: python -m pytest -q tests
+      - name: Build live data (Yahoo Finance) and run all strategies
+        run: python -m pipeline.run --out site/data
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

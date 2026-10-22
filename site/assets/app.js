@@ -1,0 +1,591 @@
+/* 151 Trading Strategies · NIFTY 50 & SENSEX – single-page dashboard (no build step). */
+(() => {
+'use strict';
+
+// ------------------------------------------------------------------ helpers
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const isNum = v => typeof v === 'number' && isFinite(v);
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } },
+};
+const fmt = {
+  pct: (v, d = 1) => isNum(v) ? (v * 100).toFixed(d) + '%' : '–',
+  spct: (v, d = 1) => isNum(v) ? (v >= 0 ? '+' : '') + (v * 100).toFixed(d) + '%' : '–',
+  n: (v, d = 2) => isNum(v) ? v.toFixed(d) : '–',
+  sn: (v, d = 2) => isNum(v) ? (v >= 0 ? '+' : '') + v.toFixed(d) : '–',
+  big: (v, d = 0) => isNum(v) ? v.toLocaleString('en-IN', { maximumFractionDigits: d, minimumFractionDigits: d }) : '–',
+  cr: v => isNum(v) ? '₹' + (v / 1e7).toLocaleString('en-IN', { maximumFractionDigits: 0 }) + ' Cr' : '–',
+};
+const cls = v => (!isNum(v) || v === 0) ? 'flat' : v > 0 ? 'up' : 'down';
+const UNI_LABEL = { NIFTY50: 'NIFTY 50', SENSEX30: 'SENSEX' };
+const BIAS = { long: ['LONG', 'up'], short: ['SHORT', 'down'], mixed: ['LONG / SHORT', 'mix'], neutral: ['NEUTRAL', 'flat'] };
+const STATUS_CHIP = { adapted: ['ADAPTED', 'adapted'], proxy: ['PROXY DATA', 'proxy'] };
+const CURVE_STYLE = {
+  strategy: { label: 'Strategy', color: '#2dd4bf', width: 2.4 },
+  benchmark: { label: 'Index', color: '#7f8da1', width: 1.6, dash: [5, 4] },
+  long_only: { label: 'Long leg only', color: '#60a5fa', width: 1.6 },
+  constituents_avg: { label: 'Constituents (avg of single-stock runs)', color: '#fbbf24', width: 1.6 },
+  always_sell: { label: 'Always sell (no filter)', color: '#fbbf24', width: 1.6 },
+  equal_weight_alphas: { label: 'Equal-weight alphas', color: '#a78bfa', width: 1.6 },
+};
+
+const state = {
+  uni: store.get('uni', 'NIFTY50'),
+  meta: null, live: null, registry: null,
+  cats: {}, byId: {}, charts: [],
+  sort: { key: 'sharpe', dir: -1 },
+  filter: { cat: 'all', q: '' },
+  optFilter: 'all',
+};
+if (!UNI_LABEL[state.uni]) state.uni = 'NIFTY50';
+
+// ------------------------------------------------------------------ data
+let VERSION = '';
+async function getJSON(name, fresh = false) {
+  const url = `data/${name}.json` + (fresh || !VERSION ? `?t=${Date.now()}` : `?v=${encodeURIComponent(VERSION)}`);
+  const r = await fetch(url, fresh ? { cache: 'no-store' } : undefined);
+  if (!r.ok) throw new Error(`${name}.json: HTTP ${r.status}`);
+  return r.json();
+}
+async function loadCat(cat) {
+  if (state.cats[cat]) return state.cats[cat];
+  const d = await getJSON(cat);
+  state.cats[cat] = d;
+  d.strategies.forEach(s => { state.byId[s.id] = s; });
+  return d;
+}
+async function loadAll() {
+  await Promise.all(state.meta.categories.map(c => loadCat(c.id)));
+}
+const allStrategies = () => state.meta.categories.flatMap(c => (state.cats[c.id]?.strategies || []));
+const blockOf = s => s.universes?.[state.uni];
+
+// ------------------------------------------------------------------ charts
+function clearCharts() { state.charts.forEach(c => { try { c.destroy(); } catch (e) { /* ignore */ } }); state.charts = []; }
+function setupChartDefaults() {
+  const C = Chart.defaults;
+  C.color = '#7f8da1';
+  C.borderColor = '#1b2433';
+  C.font.family = getComputedStyle(document.body).fontFamily;
+  C.font.size = 11;
+  C.animation = false;
+  C.maintainAspectRatio = false;
+  C.plugins.legend.labels.usePointStyle = true;
+  C.plugins.legend.labels.pointStyle = 'line';
+  C.plugins.legend.labels.boxWidth = 22;
+  C.plugins.tooltip.backgroundColor = '#0d121a';
+  C.plugins.tooltip.borderColor = '#2b384b';
+  C.plugins.tooltip.borderWidth = 1;
+  C.plugins.tooltip.titleColor = '#e7edf5';
+  C.plugins.tooltip.bodyColor = '#b4c0cf';
+  C.plugins.tooltip.padding = 10;
+}
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dateTick = s => { const p = String(s).split('-'); return p.length === 3 ? `${MON[+p[1] - 1]} ’${p[0].slice(2)}` : s; };
+
+function mkChart(canvas, cfg) {
+  const ch = new Chart(canvas, cfg);
+  state.charts.push(ch);
+  return ch;
+}
+function lineConfig(labels, datasets, { yfmt = v => v, log = false, ytitle = '' } = {}) {
+  return {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      interaction: { mode: 'index', intersect: false },
+      elements: { point: { radius: 0, hoverRadius: 4 } },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { callbacks: { title: it => it[0].label, label: c => ` ${c.dataset.label}: ${yfmt(c.parsed.y)}` } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8, maxRotation: 0, callback(v) { return dateTick(this.getLabelForValue(v)); } }, grid: { display: false } },
+        y: { type: log ? 'logarithmic' : 'linear', ticks: { callback: v => yfmt(v), maxTicksLimit: 7 }, title: { display: !!ytitle, text: ytitle } },
+      },
+    },
+  };
+}
+function drawEquity(canvas, curve, { units, benchLabel, log = false, neutral = false }) {
+  const keys = Object.keys(curve).filter(k => k !== 'dates');
+  const ds = keys.map(k => {
+    const st = CURVE_STYLE[k] || { label: k, color: '#999', width: 1.5 };
+    return {
+      label: k === 'benchmark' && benchLabel ? benchLabel : st.label,
+      data: curve[k], borderColor: st.color, borderWidth: st.width, borderDash: st.dash || [], tension: 0.1, hidden: neutral && (k === 'benchmark' || k === 'long_only'), _key: k,
+    };
+  });
+  const isCum = /cumul/i.test(units || '');
+  return mkChart(canvas, lineConfig(curve.dates, ds, {
+    log: log && !isCum,
+    yfmt: v => isCum ? fmt.n(v, 1) : fmt.n(v, 0),
+  }));
+}
+
+const vlines = {
+  id: 'vlines',
+  afterDatasetsDraw(chart, _a, opts) {
+    const { ctx, chartArea: ca, scales: { x } } = chart;
+    (opts.lines || []).forEach(l => {
+      const px = x.getPixelForValue(l.x);
+      if (px < ca.left || px > ca.right) return;
+      ctx.save();
+      ctx.strokeStyle = l.color; ctx.lineWidth = 1; ctx.setLineDash(l.dash || [4, 4]);
+      ctx.beginPath(); ctx.moveTo(px, ca.top); ctx.lineTo(px, ca.bottom); ctx.stroke();
+      ctx.setLineDash([]); ctx.fillStyle = l.color; ctx.font = '11px ' + Chart.defaults.font.family;
+      ctx.textAlign = 'center'; ctx.fillText(l.label, Math.min(Math.max(px, ca.left + 30), ca.right - 30), l.bottom ? ca.bottom - 6 : ca.top + 12);
+      ctx.restore();
+    });
+  },
+};
+function drawPayoff(canvas, p) {
+  const pts = k => p.x.map((x, i) => ({ x, y: p[k][i] }));
+  const lines = [{ x: p.spot, color: '#e7edf5', label: 'Spot ' + fmt.big(p.spot) }]
+    .concat((p.breakevens || []).map(b => ({ x: b, color: '#fbbf24', label: 'BE ' + fmt.big(b), bottom: true })));
+  return mkChart(canvas, {
+    type: 'line', plugins: [vlines],
+    data: {
+      datasets: [
+        { label: 'At expiry', data: pts('expiry'), borderColor: '#2dd4bf', borderWidth: 2.4, pointRadius: 0, fill: { target: 'origin', above: 'rgba(52,211,153,.14)', below: 'rgba(248,113,113,.14)' } },
+        { label: 'Half-way to expiry (model)', data: pts('mid'), borderColor: '#60a5fa', borderWidth: 1.6, borderDash: [5, 4], pointRadius: 0 },
+      ],
+    },
+    options: {
+      parsing: false, interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      plugins: { vlines: { lines }, legend: { position: 'bottom' },
+        tooltip: { callbacks: { title: it => 'Index at expiry: ' + fmt.big(it[0].parsed.x), label: c => ` ${c.dataset.label}: ${fmt.big(c.parsed.y, 1)} pts` } } },
+      scales: {
+        x: { type: 'linear', ticks: { maxTicksLimit: 9, callback: v => fmt.big(v) }, grid: { display: false } },
+        y: { ticks: { callback: v => fmt.big(v) }, title: { display: true, text: 'P&L (index points)' } },
+      },
+    },
+  });
+}
+function drawGeneric(canvas, c) {
+  const palette = ['#2dd4bf', '#fbbf24', '#60a5fa', '#a78bfa', '#f87171'];
+  const ds = c.series.map((s, i) => ({ label: s.name, data: s.data, borderColor: palette[i % palette.length], borderWidth: 1.8, tension: 0.15 }));
+  const yfmt = c.yfmt === 'pct' ? v => fmt.n(v, 1) + '%' : v => fmt.n(v, 2);
+  return mkChart(canvas, lineConfig(c.x, ds, { yfmt }));
+}
+
+// ------------------------------------------------------------------ small renderers
+function spark(vals, w = 96, h = 28) {
+  if (!vals || vals.length < 2) return '';
+  const step = Math.ceil(vals.length / 70);
+  const v = vals.filter((_, i) => i % step === 0 || i === vals.length - 1);
+  const mn = Math.min(...v), mx = Math.max(...v), rg = mx - mn || 1;
+  const pts = v.map((y, i) => `${((i / (v.length - 1)) * w).toFixed(1)},${(h - 2 - ((y - mn) / rg) * (h - 4)).toFixed(1)}`).join(' ');
+  const up = v[v.length - 1] >= v[0];
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" style="stroke:var(--${up ? 'up' : 'down'})" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+function biasChip(b) { const [t, c] = BIAS[b] || BIAS.neutral; return `<span class="chip ${c}">${t}</span>`; }
+function statusChip(s) { const x = STATUS_CHIP[s.status]; return x ? `<span class="chip ${x[1]}" title="${esc(s.adapted_note || '')}">${x[0]}</span>` : ''; }
+
+function perfCell(s, b) {
+  const m = b?.metrics || {};
+  if (isNum(m.cagr)) return { text: fmt.spct(m.cagr) + ' <span class="muted">CAGR</span>', val: m.cagr, cls: cls(m.cagr) };
+  if (isNum(m.avg)) { const u = /vol/i.test(b.curve_units || '') ? ' vp' : '%'; return { text: fmt.sn(m.avg) + u + ' <span class="muted">/ mo</span>', val: m.avg, cls: cls(m.avg) }; }
+  return { text: '–', val: null, cls: 'flat' };
+}
+function ddCell(b) {
+  const m = b?.metrics || {};
+  if (!isNum(m.max_dd)) return '–';
+  return isNum(m.cagr) ? fmt.pct(m.max_dd) : fmt.n(m.max_dd, 1) + (/vol/i.test(b.curve_units || '') ? ' vp' : '%');
+}
+
+function renderTable(t, small = true) {
+  const num = /^[+\-−]?[\d,.]+(%|x|d)?$|^₹|^[+\-]?\d/;
+  const head = t.columns.map(c => `<th>${esc(c)}</th>`).join('');
+  const rows = t.rows.map(r => '<tr>' + r.map((c, i) => {
+    const s = String(c ?? '');
+    let k = '';
+    if (i === 0 && /^(Long|Short)$/.test(s)) k = s === 'Long' ? 'up' : 'down';
+    else if (/^(Long|Short)$/.test(s) || s === 'traded') k = /Long|traded/.test(s) ? 'up' : 'down';
+    else if (/^\+[\d.]/.test(s)) k = 'up';
+    else if (/^[-−][\d.]/.test(s)) k = 'down';
+    const right = i > 0 && num.test(s) ? ' r' : '';
+    return `<td class="${right} ${k}">${esc(s)}</td>`;
+  }).join('') + '</tr>').join('');
+  return `<div class="tbl-wrap ${small ? 'small' : ''}"><div class="cap">${esc(t.title)}</div><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+const METRIC = {
+  cagr: ['CAGR', fmt.spct, true], sharpe: ['Sharpe', v => fmt.n(v), true], vol: ['Volatility', fmt.pct], max_dd: ['Max drawdown', fmt.pct, true],
+  hit_rate: ['Hit rate', v => fmt.pct(v, 0)], ret_1y: ['Last 12 months', fmt.spct, true], total_return: ['Total return', fmt.spct, true],
+  sharpe_gross: ['Sharpe before costs', v => fmt.n(v), true], turnover_ann: ['Turnover / year', v => fmt.n(v, 1) + '×'], beta: ['Beta to index', v => fmt.n(v)],
+  bench_cagr: ['Index CAGR', fmt.spct, true], bench_sharpe: ['Index Sharpe', v => fmt.n(v), true], calmar: ['Calmar', v => fmt.n(v)],
+  long_only_cagr: ['Long-leg CAGR', fmt.spct, true], long_only_sharpe: ['Long-leg Sharpe', v => fmt.n(v), true], long_only_max_dd: ['Long-leg max DD', fmt.pct],
+  direction_accuracy: ['Direction accuracy', v => fmt.pct(v, 1)],
+  coverage: ['Stocks with data', v => fmt.n(v, 0)],
+  implied_corr: ['Implied correlation', v => fmt.n(v)], realised_corr: ['Realised correlation', v => fmt.n(v)], corr_spread: ['Implied − realised', v => fmt.sn(v)],
+  spread_percentile: ['Spread percentile (5y)', v => fmt.n(v, 0) + 'th'], theoretical_vol: ['Theoretical index vol', v => fmt.n(v, 1) + '%'],
+  risk_factors_K: ['Risk factors K', v => fmt.n(v, 0)], erank: ['eRank', v => fmt.n(v, 1)], subset_weight_share: ['Subset weight share', v => fmt.pct(v, 0)],
+  basket_beta: ['Basket beta (hedge ratio)', v => fmt.n(v)], vol_unhedged: ['Vol unhedged', fmt.pct], vol_hedged: ['Vol hedged', fmt.pct], avg_variance_cut: ['Avg variance cut', v => fmt.pct(v, 0)],
+  vix: ['India VIX', v => fmt.n(v, 1)], rv_21d: ['Realised vol 21d', v => fmt.n(v, 1) + '%'], vrp_spread: ['VIX − realised', v => fmt.sn(v, 1)],
+  months_traded: ['Months traded', v => fmt.n(v, 0)],
+};
+const CYC = (unit) => ({
+  avg: ['Avg / cycle', v => fmt.sn(v) + unit, true], total: ['Cumulative', v => fmt.sn(v, 1) + unit, true], sharpe: ['Sharpe (monthly)', v => fmt.n(v), true],
+  hit_rate: ['Hit rate', v => fmt.pct(v, 0)], worst: ['Worst cycle', v => fmt.sn(v) + unit, true], best: ['Best cycle', v => fmt.sn(v) + unit, true],
+  max_dd: ['Max drawdown', v => fmt.n(v, 1) + unit, true], n: ['Cycles', v => fmt.n(v, 0)],
+  always_total: ['Cumulative if always sold', v => fmt.sn(v, 1) + unit, true], always_sharpe: ['Sharpe if always sold', v => fmt.n(v), true],
+});
+const ORDER_RET = ['cagr', 'sharpe', 'vol', 'max_dd', 'hit_rate', 'ret_1y', 'sharpe_gross', 'turnover_ann', 'beta', 'bench_cagr', 'bench_sharpe', 'long_only_cagr', 'long_only_sharpe', 'long_only_max_dd', 'direction_accuracy', 'calmar', 'total_return'];
+const ORDER_CYC = ['avg', 'total', 'sharpe', 'hit_rate', 'worst', 'best', 'max_dd', 'n', 'always_total', 'always_sharpe', 'vix', 'rv_21d', 'vrp_spread', 'months_traded'];
+const ORDER_OTHER = ['coverage', 'implied_corr', 'realised_corr', 'corr_spread', 'spread_percentile', 'vix', 'theoretical_vol', 'risk_factors_K', 'erank', 'subset_weight_share', 'basket_beta', 'vol_unhedged', 'vol_hedged', 'avg_variance_cut'];
+
+function metricTiles(b, compact) {
+  const m = b.metrics || {};
+  const unit = /vol/i.test(b.curve_units || '') ? ' vp' : '%';
+  const isRet = isNum(m.cagr), isCyc = isNum(m.avg);
+  const defs = isRet ? { ...METRIC } : isCyc ? { ...METRIC, ...CYC(unit) } : { ...METRIC };
+  const order = isRet ? ORDER_RET.concat(ORDER_OTHER) : isCyc ? ORDER_CYC : ORDER_OTHER;
+  const tiles = [];
+  order.forEach(k => {
+    if (!(k in m) || !isNum(m[k]) || !defs[k]) return;
+    const [label, f, signed] = defs[k];
+    tiles.push(`<div class="tile"><div class="k">${label}</div><div class="v ${signed ? cls(m[k]) : ''}">${f(m[k])}</div></div>`);
+  });
+  if (isRet && m.start) tiles.push(`<div class="tile"><div class="k">Backtest start</div><div class="v" style="font-size:15px">${esc(m.start)}</div><div class="s">${fmt.big(m.n)} trading days</div></div>`);
+  if (isCyc && m.start) tiles.push(`<div class="tile"><div class="k">Backtest start</div><div class="v" style="font-size:15px">${esc(m.start)}</div></div>`);
+  return tiles.length ? `<div class="tiles ${compact ? 'compact' : ''}">${tiles.join('')}</div>` : '<p class="muted">No backtest metrics for this strategy.</p>';
+}
+
+// ------------------------------------------------------------------ chrome (header / nav)
+function renderChrome() {
+  const m = state.meta;
+  $('#banner').innerHTML = m.synthetic
+    ? '<div class="banner synthetic">⚠ SYNTHETIC TEST DATA – generated for development, not real market data.</div>'
+    : (daysOld(m.generated_at) > 5 ? `<div class="banner stale">Data is ${Math.floor(daysOld(m.generated_at))} days old – the GitHub Actions refresh may be failing.</div>` : '');
+  $('#uni-seg').innerHTML = Object.keys(UNI_LABEL).map(u =>
+    `<button type="button" data-uni="${u}" aria-pressed="${u === state.uni}">${UNI_LABEL[u]}</button>`).join('');
+  $$('#uni-seg button').forEach(b => b.addEventListener('click', () => { state.uni = b.dataset.uni; store.set('uni', state.uni); renderChrome(); route(); }));
+  const q = (state.live?.indices || []).map(i => {
+    const isV = i.symbol === '^INDIAVIX';
+    return `<div class="chip-q" title="${esc(i.name)}"><b>${esc(i.name)}</b><span class="px">${fmt.big(i.last, 2)}</span><span class="ch ${isV ? (i.chg_pct > 0 ? 'down' : 'up') : cls(i.chg_pct)}">${fmt.spct(i.chg_pct, 2)}</span></div>`;
+  }).join('');
+  $('#ticker').innerHTML = q;
+  const open = nseOpen();
+  $('#status').innerHTML = `<span class="dot ${open ? '' : 'off'}"></span><span>${open ? 'NSE open' : 'NSE closed'} · data as of ${esc(m.data_asof)} · updated ${ago(m.generated_at)}</span>`;
+  const cats = m.categories;
+  const cur = location.hash;
+  const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
+  $('#nav').innerHTML = `
+    ${link('#/', 'Signal board', m.counts.implemented)}
+    ${link('#/market', 'Market now')}
+    <div class="grp">Strategies</div>
+    ${cats.map(c => link('#/c/' + c.id, esc(c.label), c.count)).join('')}
+    <div class="grp">Reference</div>
+    ${link('#/excluded', 'Not applicable', m.counts.excluded)}
+    ${link('#/about', 'Method & data')}`;
+  $$('#nav a').forEach(a => a.addEventListener('click', () => closeMenu()));
+}
+function daysOld(iso) { return (Date.now() - Date.parse(iso)) / 864e5; }
+function ago(iso) {
+  const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (mins < 2) return 'just now';
+  if (mins < 90) return `${mins} min ago`;
+  const h = mins / 60;
+  return h < 36 ? `${Math.round(h)} h ago` : `${Math.round(h / 24)} d ago`;
+}
+function nseOpen() {
+  const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000);
+  const d = ist.getDay(), t = ist.getHours() * 60 + ist.getMinutes();
+  return d >= 1 && d <= 5 && t >= 9 * 60 + 15 && t <= 15 * 60 + 30;
+}
+function closeMenu() { $('#nav').classList.remove('open'); $('#menu-btn').setAttribute('aria-expanded', 'false'); }
+
+// ------------------------------------------------------------------ views
+function setView(html) { const v = $('#view'); v.innerHTML = html; v.focus({ preventScroll: true }); window.scrollTo(0, 0); }
+const loadingHTML = '<div class="loading"><div><div class="spin"></div>Loading…</div></div>';
+
+async function viewOverview() {
+  setView(loadingHTML);
+  await loadAll();
+  const list = allStrategies().map(s => ({ s, b: blockOf(s) })).filter(x => x.b && (x.b.signal || x.b.metrics));
+  const longs = list.filter(x => x.b.signal?.bias === 'long').length;
+  const shorts = list.filter(x => x.b.signal?.bias === 'short').length;
+  const vix = (state.live?.indices || []).find(i => i.symbol === '^INDIAVIX');
+  const idx = (state.live?.indices || []).find(i => i.name === UNI_LABEL[state.uni]);
+  const m = state.meta;
+  const hero = `
+  <div class="hero">
+    <div class="tile"><div class="k">Strategies live</div><div class="v">${m.counts.implemented}</div><div class="s">of ${m.counts.book_sections} sections in the book · ${m.counts.excluded} not applicable</div></div>
+    <div class="tile"><div class="k">${UNI_LABEL[state.uni]}</div><div class="v">${idx ? fmt.big(idx.last, 2) : '–'}</div><div class="s ${cls(idx?.chg_pct)}">${idx ? fmt.spct(idx.chg_pct, 2) + ' today · ' + fmt.spct(idx.ret_1m) + ' 1M' : ''}</div></div>
+    <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 2) : '–'}</div><div class="s">${vix && isNum(vix.pctile_1y) ? fmt.n(vix.pctile_1y * 100, 0) + 'th percentile of last year' : ''}</div></div>
+    <div class="tile"><div class="k">Directional signals now</div><div class="v"><span class="up">${longs}</span> <span class="muted">/</span> <span class="down">${shorts}</span></div><div class="s">strategies leaning long / short</div></div>
+  </div>`;
+  const nonOpt = list.filter(x => x.s.category !== 'options' && isNum(x.b.metrics?.sharpe)).sort((a, b) => b.b.metrics.sharpe - a.b.metrics.sharpe).slice(0, 6);
+  const opts = list.filter(x => x.s.category === 'options' && x.b.fit?.label === 'favourable').slice(0, 6);
+  const mini = (rows, fn) => rows.length ? `<div class="stack" style="gap:8px">${rows.map(fn).join('')}</div>` : '<p class="muted">Nothing flagged right now.</p>';
+  const hi = `
+  <div class="grid cols-2" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:18px">
+    <div class="card"><h3>Best backtested risk-adjusted returns (non-option)</h3>${mini(nonOpt, x => `
+      <a class="row" style="display:flex;justify-content:space-between;gap:10px;color:inherit" href="#/s/${x.s.id}"><span><span class="chip id">${x.s.id}</span> ${esc(x.s.name)}</span><span class="num up">Sharpe ${fmt.n(x.b.metrics.sharpe)}</span></a>`)}</div>
+    <div class="card"><h3>Option setups favoured by today's regime</h3>${mini(opts, x => `
+      <a class="row" style="display:flex;justify-content:space-between;gap:10px;color:inherit" href="#/s/${x.s.id}"><span><span class="chip id">${x.s.id}</span> ${esc(x.s.name)}</span>${biasChip(x.b.signal.bias)}</a>`)}</div>
+  </div>`;
+  const pills = [['all', 'All']].concat(m.categories.map(c => [c.id, c.label]));
+  setView(`
+    <div class="page-head"><div><h1>Signal board · ${UNI_LABEL[state.uni]}</h1>
+      <p>Every applicable strategy from <i>151 Trading Strategies</i>, run on live Yahoo Finance data. Click a row for the equity curve, current portfolio and method.</p></div></div>
+    ${hero}${hi}
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search strategies…" value="${esc(state.filter.q)}" aria-label="Search strategies">
+      <div class="pills" id="cat-pills">${pills.map(([id, l]) => `<button class="pill" type="button" data-cat="${id}" aria-pressed="${state.filter.cat === id}">${esc(l)}</button>`).join('')}</div>
+    </div>
+    <div class="tbl-wrap"><table id="board"></table></div>
+    <div class="legend"><span>vp = volatility points</span><span>Sharpe: annualised, before the risk-free rate</span><span>Option rows: monthly-roll backtest on theoretical prices</span></div>`);
+  const draw = () => {
+    const q = state.filter.q.trim().toLowerCase();
+    let rows = list.filter(x => (state.filter.cat === 'all' || x.s.category === state.filter.cat) &&
+      (!q || (x.s.id + ' ' + x.s.name + ' ' + (x.b.signal?.label || '')).toLowerCase().includes(q)));
+    const key = state.sort.key, dir = state.sort.dir;
+    const val = x => key === 'id' ? x.s.id.split('.').map(Number).reduce((a, n, i) => a + n / Math.pow(1000, i), 0)
+      : key === 'name' ? x.s.name.toLowerCase() : key === 'perf' ? perfCell(x.s, x.b).val : key === 'dd' ? x.b.metrics?.max_dd
+      : key === 'hit' ? x.b.metrics?.hit_rate : x.b.metrics?.sharpe;
+    rows = rows.slice().sort((a, b) => { const va = val(a), vb = val(b); if (va == null) return 1; if (vb == null) return -1; return va < vb ? -dir : va > vb ? dir : 0; });
+    const th = (k, label, r) => `<th class="sortable ${r ? 'r' : ''}" data-k="${k}" aria-sort="${state.sort.key === k ? (dir > 0 ? 'ascending' : 'descending') : 'none'}">${label}${state.sort.key === k ? `<span class="arr">${dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
+    $('#board').innerHTML = `<thead><tr>${th('id', 'ID')}${th('name', 'Strategy')}<th>Signal now</th>${th('perf', 'Backtest return', 1)}${th('sharpe', 'Sharpe', 1)}${th('dd', 'Max DD', 1)}${th('hit', 'Hit rate', 1)}<th></th></tr></thead><tbody>${rows.map(x => {
+      const p = perfCell(x.s, x.b), m = x.b.metrics || {};
+      return `<tr class="click" data-id="${x.s.id}" tabindex="0"><td><span class="chip id">${x.s.id}</span></td><td class="wrap"><b>${esc(x.s.name)}</b> ${statusChip(x.s)}</td>
+        <td class="sig">${x.b.signal ? biasChip(x.b.signal.bias) + ' ' + esc(x.b.signal.label.length > 90 ? x.b.signal.label.slice(0, 88) + '…' : x.b.signal.label) : '–'}</td>
+        <td class="r ${p.cls}">${p.text}</td><td class="r ${cls(m.sharpe)}">${fmt.n(m.sharpe)}</td><td class="r">${ddCell(x.b)}</td><td class="r">${isNum(m.hit_rate) ? fmt.pct(m.hit_rate, 0) : '–'}</td>
+        <td>${x.b.curve ? spark(x.b.curve.strategy, 80, 24) : ''}</td></tr>`;
+    }).join('') || '<tr><td colspan="8" class="empty">No strategies match.</td></tr>'}</tbody>`;
+    $$('#board th.sortable').forEach(h => h.addEventListener('click', () => {
+      const k = h.dataset.k; state.sort = state.sort.key === k ? { key: k, dir: -state.sort.dir } : { key: k, dir: k === 'id' || k === 'name' ? 1 : -1 }; draw();
+    }));
+    $$('#board tr.click').forEach(r => {
+      const go = () => { location.hash = '#/s/' + r.dataset.id; };
+      r.addEventListener('click', go); r.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    });
+  };
+  draw();
+  $('#q').addEventListener('input', e => { state.filter.q = e.target.value; draw(); });
+  $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => { state.filter.cat = p.dataset.cat; $$('#cat-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
+}
+
+async function viewCategory(cat) {
+  setView(loadingHTML);
+  const d = await loadCat(cat);
+  const c = state.meta.categories.find(x => x.id === cat);
+  let items = d.strategies;
+  const isOpt = cat === 'options';
+  const OUT = [['all', 'All'], ['bullish', 'Bullish'], ['bearish', 'Bearish'], ['neutral', 'Neutral / sideways'], ['long', 'Long volatility'], ['short', 'Short volatility'], ['fav', 'Favoured now']];
+  const draw = () => {
+    let rows = items;
+    if (isOpt && state.optFilter !== 'all') {
+      const f = state.optFilter;
+      rows = rows.filter(s => f === 'bullish' || f === 'bearish' || f === 'neutral' ? s.outlook === f : f === 'long' || f === 'short' ? s.vol_view === f : blockOf(s)?.fit?.label === 'favourable');
+    }
+    $('#cards').innerHTML = rows.map(s => {
+      const b = blockOf(s) || {}, m = b.metrics || {}, p = perfCell(s, b);
+      return `<a class="scard" href="#/s/${s.id}"><div class="top"><span class="chip id">${s.id}</span><span>${statusChip(s)} ${b.signal ? biasChip(b.signal.bias) : ''}</span></div>
+        <div class="nm">${esc(s.name)}</div><div class="sg">${esc(b.error ? 'Failed to compute in the latest run' : (b.signal?.label || (b.notes?.[0] || 'No data')))}</div>
+        <div class="row"><div class="kv"><div><span>Return</span><b class="${p.cls}">${p.val == null ? '–' : (isNum(m.cagr) ? fmt.spct(m.cagr) : fmt.sn(m.avg) + '/mo')}</b></div><div><span>Sharpe</span><b class="${cls(m.sharpe)}">${fmt.n(m.sharpe)}</b></div></div>${b.curve ? spark(b.curve.strategy) : ''}</div></a>`;
+    }).join('') || '<p class="empty">No strategies in this view.</p>';
+  };
+  setView(`<div class="page-head"><div><h1>${esc(c.label)} · ${UNI_LABEL[state.uni]}</h1><p>${esc(c.blurb)}</p></div></div>
+    ${isOpt ? `<div class="toolbar"><div class="pills" id="opt-pills">${OUT.map(([id, l]) => `<button class="pill" data-f="${id}" aria-pressed="${state.optFilter === id}" type="button">${l}</button>`).join('')}</div></div>` : ''}
+    <div class="cards" id="cards"></div>`);
+  draw();
+  $$('#opt-pills .pill').forEach(p => p.addEventListener('click', () => { state.optFilter = p.dataset.f; $$('#opt-pills .pill').forEach(x => x.setAttribute('aria-pressed', x === p)); draw(); }));
+}
+
+async function viewStrategy(id) {
+  setView(loadingHTML);
+  let s = state.byId[id];
+  if (!s) {
+    const r = state.registry.items.find(x => x.id === id);
+    if (!r || !r.category) { location.hash = '#/excluded'; return; }
+    await loadCat(r.category);
+    s = state.byId[id];
+  }
+  if (!s) { setView('<p class="empty">Strategy not found.</p>'); return; }
+  const cat = state.meta.categories.find(c => c.id === s.category);
+  const siblings = state.cats[s.category].strategies;
+  const i = siblings.findIndex(x => x.id === id);
+  const prev = siblings[i - 1], next = siblings[i + 1];
+  const b = blockOf(s);
+  const head = `
+    <div class="crumbs"><a href="#/c/${s.category}">${esc(cat.label)}</a> › <span class="chip id">${s.id}</span>
+      <span style="margin-left:auto" class="nav-btns">${prev ? `<a class="btn" href="#/s/${prev.id}">← ${prev.id}</a>` : ''}${next ? `<a class="btn" href="#/s/${next.id}">${next.id} →</a>` : ''}</span></div>
+    <div class="page-head"><div><h1>${esc(s.name)} ${statusChip(s)}</h1><p>${esc(s.desc)}</p>
+      ${s.adapted_note ? `<p style="margin-top:6px"><span class="chip ${s.status}">${s.status === 'proxy' ? 'PROXY DATA' : 'ADAPTED'}</span> <span class="muted">${esc(s.adapted_note)}</span></p>` : ''}</div>
+      <div class="muted">${UNI_LABEL[state.uni]}${s.outlook ? ` · ${esc(s.outlook)} · ${esc(s.style)}` : ''}</div></div>`;
+  if (!b) { setView(head + `<p class="err">No results for ${UNI_LABEL[state.uni]} (module error – see Method &amp; data).</p>`); return; }
+  if (b.error) { setView(head + `<p class="err">This strategy failed to compute in the latest run for ${UNI_LABEL[state.uni]}: ${esc(b.error)}</p>`); return; }
+
+  const sig = b.signal;
+  const sigHTML = sig ? `<div class="signalbar ${(BIAS[sig.bias] || BIAS.neutral)[1]}">${biasChip(sig.bias)}<div><div class="lbl">${esc(sig.label)}</div>${sig.detail ? `<div class="det">${esc(sig.detail)}</div>` : ''}</div></div>` : '';
+  const isOpt = !!b.payoff;
+  let body = '';
+  if (isOpt) {
+    const st = b.stats;
+    const T = (k, v, sub, c = '') => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
+    const prem = st.net_premium;
+    body += `<div class="grid cols-2"><div class="card"><div class="chart-head"><h3>Payoff diagram (${UNI_LABEL[state.uni]}, ${state.meta.assumptions.option_horizon_days}-day expiry)</h3><span class="sub">theoretical Black-Scholes · IV = India VIX ${fmt.n(b.fit.vix, 1)}%</span></div><div class="chartbox"><canvas id="c-payoff" role="img" aria-label="Option payoff diagram"></canvas></div></div>
+      <div class="card"><h3>Setup now</h3><div class="tiles compact">
+        ${T(prem >= 0 ? 'Net debit' : 'Net credit', fmt.big(Math.abs(prem), 0), 'pts · ' + fmt.n(Math.abs(st.net_premium_pct), 2) + '% of spot')}
+        ${T('Max profit', st.max_profit == null ? 'Unlimited' : fmt.big(st.max_profit), st.max_profit == null ? '' : 'pts · ' + fmt.n(st.max_profit / b.payoff.spot * 100, 2) + '% of spot', 'up')}
+        ${T('Max loss', st.max_loss == null ? 'Unlimited' : (st.riskless ? 'None' : fmt.big(st.max_loss)), st.max_loss == null || st.riskless ? '' : 'pts · ' + fmt.n(st.max_loss / b.payoff.spot * 100, 2) + '% of spot', 'down')}
+        ${T('Breakeven' + (st.breakevens.length > 1 ? 's' : ''), st.breakevens.length ? st.breakevens.map(x => fmt.big(x)).join('<br>') : '–')}
+        ${T('Prob. of profit', fmt.pct(st.pop, 0), 'risk-neutral lognormal')}
+        ${T('Delta', fmt.sn(st.delta), 'per unit of index')}
+        ${T('Gamma', fmt.sn(st.gamma, 3), 'Δ change per +1% move')}
+        ${T('Vega', fmt.sn(st.vega, 1), 'pts per vol point')}
+        ${T('Theta', fmt.sn(st.theta, 1), 'pts per day')}
+        ${T('IV rank', fmt.n(b.fit.iv_rank, 0) + '%', 'India VIX vs 1y range')}
+        ${T('Trend', esc(b.fit.trend), 'vs 50 / 200-day averages')}
+      </div></div></div>`;
+    body += (b.tables || []).map(t => renderTable(t)).join('');
+    body += `<div class="card"><div class="chart-head"><h3>Historical monthly-roll backtest</h3><span class="sub">${esc(b.curve_units || '')} · IV = India VIX at entry</span></div><div class="chartbox"><canvas id="c-eq"></canvas></div></div>
+      <div class="card"><h3>Backtest statistics</h3>${metricTiles(b)}</div>`;
+  } else {
+    if (b.curve) {
+      body += `<div class="grid cols-2"><div class="card"><div class="chart-head"><h3>Backtest</h3>
+        <div class="toggles">${/cumul/i.test(b.curve_units || '') ? '' : '<label><input type="checkbox" id="logscale"> Log scale</label>'}<span class="sub">${esc(b.curve_units || 'growth of 100')} · click legend to show/hide lines</span></div></div>
+        <div class="chartbox"><canvas id="c-eq" role="img" aria-label="Strategy equity curve"></canvas></div></div>
+        <div class="card"><h3>Performance</h3>${metricTiles(b, true)}</div></div>`;
+    } else if (b.metrics) {
+      body += `<div class="card"><h3>Live metrics</h3>${metricTiles(b)}</div>`;
+    }
+    (b.charts || []).forEach((c, k) => { body += `<div class="card"><div class="chart-head"><h3>${esc(c.title)}</h3></div><div class="chartbox sm"><canvas id="c-x${k}"></canvas></div></div>`; });
+    body += (b.tables || []).map(t => renderTable(t)).join('');
+  }
+  if (b.notes?.length) body += `<div class="card"><h3>How it works &amp; caveats</h3><div class="notes">${b.notes.map(n => `<p>${esc(n)}</p>`).join('')}</div></div>`;
+  setView(head + `<div class="stack">${sigHTML}${body}</div>`);
+
+  // charts
+  const benchLabel = isOpt ? 'Index monthly % move (cumulative)' : `${UNI_LABEL[state.uni]} buy & hold`;
+  if (isOpt) drawPayoff($('#c-payoff'), b.payoff);
+  if (b.curve) {
+    const cv = $('#c-eq');
+    const neutral = isNum(b.metrics?.beta) && Math.abs(b.metrics.beta) < 0.3 && !isOpt;
+    let ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral });
+    const lg = $('#logscale');
+    if (lg) lg.addEventListener('change', () => { state.charts = state.charts.filter(c => c !== ch); ch.destroy(); ch = drawEquity(cv, b.curve, { units: b.curve_units, benchLabel, neutral, log: lg.checked }); });
+  }
+  (b.charts || []).forEach((c, k) => drawGeneric($('#c-x' + k), c));
+}
+
+async function viewMarket() {
+  const live = state.live;
+  if (!live) { setView('<p class="err">Live snapshot unavailable.</p>'); return; }
+  const card = i => {
+    const isV = i.symbol === '^INDIAVIX';
+    const sp = i.intraday?.c?.length > 5 ? i.intraday.c : i.spark;
+    const rr = (l, v) => `<div style="display:flex;justify-content:space-between"><span class="muted">${l}</span><span class="num ${isV ? '' : cls(v)}">${isV ? fmt.n(v * 100, 1) + '%' : fmt.spct(v)}</span></div>`;
+    return `<div class="card idx-card"><div style="display:flex;justify-content:space-between;align-items:center"><h3>${esc(i.name)}</h3><span class="muted" style="font-size:11px">${i.intraday?.c?.length > 5 ? 'intraday' : 'last 90 days'}</span></div>
+      <div><div class="big">${fmt.big(i.last, 2)}</div><div class="num ${isV ? (i.chg_pct > 0 ? 'down' : 'up') : cls(i.chg_pct)}">${fmt.sn(i.chg, 2)} (${fmt.spct(i.chg_pct, 2)})</div></div>
+      ${spark(sp, 260, 56)}
+      <div class="stack" style="gap:3px;font-size:12.5px">${rr('1 week', i.ret_1w)}${rr('1 month', i.ret_1m)}${rr('6 months', i.ret_6m)}${rr('1 year', i.ret_1y)}${rr('From 52-week high', i.from_hi)}
+      ${isNum(i.vs_dma200) ? rr('vs 200-day average', i.vs_dma200) : ''}${isV && isNum(i.pctile_1y) ? `<div style="display:flex;justify-content:space-between"><span class="muted">1-year percentile</span><span class="num">${fmt.n(i.pctile_1y * 100, 0)}th</span></div>` : ''}</div></div>`;
+  };
+  const inU = s => state.uni === 'NIFTY50' ? s.in_nifty : s.in_sensex;
+  const stocks = live.stocks.filter(inU);
+  const col = v => {
+    const t = Math.max(-1, Math.min(1, v / 0.03));
+    return t >= 0 ? `rgba(16,185,129,${0.18 + 0.62 * t})` : `rgba(239,68,68,${0.18 + 0.62 * -t})`;
+  };
+  const bySec = {};
+  stocks.forEach(s => (bySec[s.sector] ||= []).push(s));
+  const heat = Object.keys(bySec).sort().map(sec => `<div class="sec-h">${esc(sec)}</div><div class="heat">${bySec[sec].sort((a, b) => b.chg_pct - a.chg_pct).map(s =>
+    `<div class="hcell" style="background:${col(s.chg_pct)}" title="${esc(s.name)} · ${fmt.big(s.last, 2)}"><b>${esc(s.key)}</b><span>${fmt.spct(s.chg_pct, 2)}</span></div>`).join('')}</div>`).join('');
+  const sortKey = state.mktSort || { k: 'chg_pct', d: -1 };
+  state.mktSort = sortKey;
+  const draw = () => {
+    const { k, d } = state.mktSort;
+    const rows = stocks.slice().sort((a, b) => { const x = a[k], y = b[k]; if (x == null) return 1; if (y == null) return -1; return typeof x === 'string' ? d * x.localeCompare(y) : d * (x - y); });
+    const th = (key, l, r) => `<th class="sortable ${r ? 'r' : ''}" data-k="${key}">${l}${k === key ? `<span class="arr">${d > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
+    $('#stk').innerHTML = `<thead><tr>${th('name', 'Stock')}${th('sector', 'Sector')}${th('last', 'Price (₹)', 1)}${th('chg_pct', '1D', 1)}${th('ret_1m', '1M', 1)}${th('ret_6m', '6M', 1)}${th('ret_1y', '1Y', 1)}${th('pb', 'P/B', 1)}${th('mcap', 'Mkt cap', 1)}</tr></thead><tbody>${rows.map(s =>
+      `<tr><td><b>${esc(s.name)}</b> <span class="muted">${esc(s.symbol)}</span></td><td>${esc(s.sector)}</td><td class="r">${fmt.big(s.last, 2)}</td>${[s.chg_pct, s.ret_1m, s.ret_6m, s.ret_1y].map(v => `<td class="r ${cls(v)}">${fmt.spct(v)}</td>`).join('')}<td class="r">${fmt.n(s.pb, 2)}</td><td class="r">${fmt.cr(s.mcap)}</td></tr>`).join('')}</tbody>`;
+    $$('#stk th.sortable').forEach(h => h.addEventListener('click', () => { const kk = h.dataset.k; state.mktSort = state.mktSort.k === kk ? { k: kk, d: -state.mktSort.d } : { k: kk, d: kk === 'name' || kk === 'sector' ? 1 : -1 }; draw(); }));
+  };
+  setView(`<div class="page-head"><div><h1>Market now</h1><p>Latest Yahoo Finance bars (delayed) as of ${esc(state.meta.data_asof)}, refreshed by GitHub Actions every 30 minutes while the NSE is open.</p></div></div>
+    <div class="grid cols-3">${live.indices.map(card).join('')}</div>
+    <div class="card" style="margin-top:14px"><h3>${UNI_LABEL[state.uni]} constituents · today's move</h3>${heat}</div>
+    <div class="toolbar" style="margin-top:18px"><h2>Constituents</h2></div><div class="tbl-wrap"><table id="stk"></table></div>`);
+  draw();
+}
+
+function viewExcluded() {
+  const items = state.registry.items;
+  const chs = state.registry.chapters;
+  const byCh = {};
+  items.forEach(i => (byCh[i.chapter] ||= []).push(i));
+  const total = items.length, ex = items.filter(i => i.status === 'excluded').length;
+  const full = [];
+  const blocks = Object.keys(byCh).map(Number).sort((a, b) => a - b).map(ch => {
+    const its = byCh[ch], bad = its.filter(i => i.status === 'excluded'), n = its.length - bad.length;
+    if (!bad.length) { full.push(`${ch}. ${chs[ch]} (${n})`); return ''; }
+    return `<div class="card"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:10px;flex-wrap:wrap"><h2>${ch}. ${esc(chs[ch])}</h2><span class="muted">${n ? `${n} applied · ` : ''}${bad.length} not applicable</span></div>
+      <div class="tbl-wrap small"><table><tbody>${bad.map(i => `<tr><td><span class="chip id">${i.id}</span></td><td class="wrap"><b>${esc(i.name)}</b></td><td class="wrap muted">${esc(i.reason)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  }).join('');
+  setView(`<div class="page-head"><div><h1>Not applicable</h1><p>The book covers ${total} sections across many asset classes. ${ex} cannot be run against the NIFTY 50 / SENSEX with Yahoo Finance data, so they are <b>not</b> included – each with the reason below. The other ${total - ex} are live${full.length ? ` (fully covered chapters: ${full.map(esc).join(', ')})` : ''}.</p></div></div>
+    <div class="legend"><span><span class="chip adapted">ADAPTED</span> method unchanged, factor set or asset adjusted to what exists for India</span><span><span class="chip proxy">PROXY DATA</span> a related series stands in for data Yahoo does not publish</span></div>
+    <div class="stack">${blocks}</div>`);
+}
+
+function viewAbout() {
+  const m = state.meta, a = m.assumptions;
+  const fails = m.failed_tickers?.length ? `<p class="err">Tickers Yahoo Finance did not return this run: ${m.failed_tickers.map(esc).join(', ')}.</p>` : '';
+  const errs = m.errors?.length ? `<p class="err">Module errors: ${m.errors.map(e => esc(e.module + '/' + e.universe + ': ' + e.error)).join('; ')}</p>` : '';
+  setView(`<div class="page-head"><div><h1>Method &amp; data</h1><p>How the numbers on this site are produced.</p></div></div>
+  <div class="stack">
+    <div class="card"><h3>Pipeline</h3><div class="notes">
+      <p><b>Source:</b> Yahoo Finance via <code>yfinance</code> — daily adjusted OHLCV for ${m.universes.NIFTY50.constituents} NIFTY 50 and ${m.universes.SENSEX30.constituents} SENSEX stocks, both indexes, India VIX, NSE sector indexes and gold/silver/Nasdaq ETFs, plus P/B and market cap snapshots. About ${a.history_years} years of history.</p>
+      <p><b>Refresh:</b> a GitHub Actions workflow re-downloads everything every 30 minutes during NSE hours (and once after the close), recomputes every strategy and redeploys this site to GitHub Pages. The latest daily bar is the live, still-forming session bar while the market is open. Yahoo data is delayed.</p>
+      <p><b>Backtests:</b> positions are decided at a close and held from the next day. Cross-sectional portfolios use the top/bottom ${(a.xs_fraction * 100).toFixed(0)}% of names and are dollar-neutral where the book says so. Costs: ${a.cost_bps} bps one-way. No slippage, borrow, margin or tax. Everything is out-of-sample/walk-forward; fundamentals (P/B) have no history on Yahoo so Value is shown as a live ranking only.</p>
+      <p><b>Options:</b> Yahoo has no Indian index option chains, so every option strategy is priced with Black-Scholes using spot, a flat implied volatility equal to India VIX (also used for SENSEX), r = ${(a.risk_free * 100).toFixed(1)}% and dividend yield ${(a.dividend_yield * 100).toFixed(1)}%. Strikes are in multiples of 50 (NIFTY) / 100 (SENSEX); offsets are in units of about 1% of spot; expiry ${a.option_horizon_days} days (60 for the far leg of calendar/diagonal spreads). The historical backtest rolls each structure monthly. These are model prices, not tradable quotes.</p>
+      <p><b>Futures:</b> there are no index/stock futures prices on Yahoo, so hedging and futures strategies use the cash series as proxy (marked <span class="chip proxy">PROXY DATA</span>).</p>
+      <p><b>Universe:</b> constituent lists are a static snapshot in <code>pipeline/universe.py</code>; indexes are rebalanced twice a year, so edit that file when they change. Delisted/renamed tickers are skipped automatically.</p>
+    </div></div>
+    <div class="card"><h3>Run status</h3>
+      <dl class="kvlist"><dt>Generated</dt><dd>${esc(m.generated_at)}</dd><dt>Latest bar</dt><dd>${esc(m.data_asof)}</dd><dt>Strategies implemented</dt><dd>${m.counts.implemented}</dd>
+      <dt>of which adapted / proxy</dt><dd>${m.counts.adapted_or_proxy}</dd><dt>Not applicable</dt><dd>${m.counts.excluded}</dd><dt>Synthetic data?</dt><dd>${m.synthetic ? 'YES (test only)' : 'no'}</dd></dl>${fails}${errs}</div>
+    <div class="card"><h3>Disclaimer</h3><div class="notes"><p>This is an educational research project, not investment advice, and is not affiliated with the book's authors or any exchange. Simulated results are hypothetical; actual trading involves costs, taxes, liquidity limits and risks that are not captured. Shorting and derivatives can lose more than the capital invested.</p></div></div>
+  </div>`);
+}
+
+// ------------------------------------------------------------------ router
+async function route() {
+  clearCharts();
+  renderChrome();
+  const h = location.hash.replace(/^#\/?/, '');
+  const [a, b] = h.split('/');
+  try {
+    if (!a) await viewOverview();
+    else if (a === 'market') await viewMarket();
+    else if (a === 'c' && b) await viewCategory(b);
+    else if (a === 's' && b) await viewStrategy(decodeURIComponent(h.slice(2)));
+    else if (a === 'excluded') viewExcluded();
+    else if (a === 'about') viewAbout();
+    else await viewOverview();
+  } catch (e) {
+    console.error(e);
+    setView(`<p class="err">Something went wrong loading this view: ${esc(e.message)}</p>`);
+  }
+}
+
+async function init() {
+  setupChartDefaults();
+  $('#menu-btn').addEventListener('click', () => { const o = $('#nav').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded', o); });
+  try {
+    state.meta = await getJSON('meta', true);
+    VERSION = state.meta.generated_at;
+    [state.live, state.registry] = await Promise.all([getJSON('live'), getJSON('registry')]);
+  } catch (e) {
+    $('#view').innerHTML = `<div class="empty"><h2>No data yet</h2><p style="margin-top:8px">The data files have not been generated. Run <code>python -m pipeline.run</code> or trigger the <b>Refresh &amp; Deploy</b> GitHub Actions workflow.</p><p class="muted" style="margin-top:8px">${esc(e.message)}</p></div>`;
+    return;
+  }
+  window.addEventListener('hashchange', route);
+  route();
+  setInterval(() => { if (state.meta) { renderChrome(); } }, 60000);
+}
+init();
+})();
