@@ -572,8 +572,39 @@ async function route() {
   }
 }
 
+// ------------------------------------------------------------------ PWA: install, share, offline
+let deferredInstall = null;
+function toast(msg) {
+  const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 4500);
+}
+function setupPWA() {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  const inst = $('#install-btn');
+  if (!standalone && ios) inst.hidden = false;           // iOS has no install prompt: show the manual hint
+  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; if (!standalone) inst.hidden = false; });
+  window.addEventListener('appinstalled', () => { inst.hidden = true; deferredInstall = null; toast('Installed – find it on your home screen'); });
+  inst.addEventListener('click', async () => {
+    if (deferredInstall) { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; inst.hidden = true; }
+    else toast('On iPhone/iPad: tap the Share icon in Safari, then “Add to Home Screen”.');
+  });
+  $('#share-btn').addEventListener('click', async () => {
+    const data = { title: '151 Trading Strategies · NIFTY & SENSEX', text: document.title, url: location.href };
+    try {
+      if (navigator.share) await navigator.share(data);
+      else { await navigator.clipboard.writeText(location.href); toast('Link copied'); }
+    } catch (e) { if (e.name !== 'AbortError') toast('Could not share – copy the address bar link instead'); }
+  });
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('service worker failed', e));
+  }
+  window.addEventListener('offline', () => toast('You are offline – showing the last saved data'));
+}
+
 async function init() {
   setupChartDefaults();
+  setupPWA();
   $('#menu-btn').addEventListener('click', () => { const o = $('#nav').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded', o); });
   try {
     state.meta = await getJSON('meta', true);

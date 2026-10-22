@@ -226,3 +226,11 @@ footer p + p { margin-top: 6px; }
   .tiles.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* PWA */
+[hidden] { display: none !important; }
+.actions { display: flex; gap: 8px; }
+.topbar { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+.toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--surface-3); border: 1px solid var(--border-2); color: var(--text); padding: 10px 16px; border-radius: 10px; z-index: 80; max-width: 90vw; box-shadow: var(--shadow); }
+footer { padding-bottom: max(30px, env(safe-area-inset-bottom)); }
+@media (max-width: 860px) { .topbar { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); } }
