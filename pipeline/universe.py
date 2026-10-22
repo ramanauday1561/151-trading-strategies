@@ -87,18 +87,13 @@ SENSEX30 = [
 MEMBERS = {"NIFTY50": NIFTY50, "SENSEX30": SENSEX30}
 
 # NSE sector indices used as "sector ETF" proxies (4.1 - 4.4)
+# NSE sector indices that Yahoo Finance still serves (verified from a live run, Oct 2026).  The other
+# NSE sector indices (^CNXAUTO, ^CNXENERGY, ^CNXFMCG, ^CNXINFRA, ^CNXMEDIA, ^CNXMETAL, ^CNXPSUBANK,
+# ^CNXREALTY) return no data, so sector rotation (4.1-4.4) uses constituent baskets instead (etfs.sector_baskets).
 SECTOR_INDICES = {
     "^NSEBANK": "Nifty Bank",
     "^CNXIT": "Nifty IT",
-    "^CNXAUTO": "Nifty Auto",
     "^CNXPHARMA": "Nifty Pharma",
-    "^CNXFMCG": "Nifty FMCG",
-    "^CNXMETAL": "Nifty Metal",
-    "^CNXENERGY": "Nifty Energy",
-    "^CNXREALTY": "Nifty Realty",
-    "^CNXINFRA": "Nifty Infrastructure",
-    "^CNXPSUBANK": "Nifty PSU Bank",
-    "^CNXMEDIA": "Nifty Media",
 }
 
 # Multi-asset trend-following universe (4.6): equity beta, mid/next-50, gold, silver, global equity, cash

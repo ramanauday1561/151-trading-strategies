@@ -216,3 +216,16 @@ def test_sanitize_handles_nan_and_numpy():
     out = runner.sanitize({"a": np.float64("nan"), "b": np.int64(3), "c": [float("inf"), 1.5], "d": pd.Timestamp("2020-01-02")})
     assert out == {"a": None, "b": 3, "c": [None, 1.5], "d": "2020-01-02"}
     json.dumps(out, allow_nan=False)
+
+
+def test_sector_rotation_falls_back_to_constituent_baskets(market):
+    """Yahoo no longer serves most NSE sector indices: 4.1-4.4 must still produce results from baskets."""
+    from pipeline import etfs
+    from pipeline.common import Ctx
+    md = market
+    ctx = Ctx(md, "NIFTY50")
+    out = etfs.run(ctx, md)
+    for sid in ("4.1", "4.1.1", "4.1.2", "4.2", "4.3", "4.4"):
+        b = out[sid]["block"]
+        assert b.get("metrics") and b.get("signal"), sid
+        assert any("basket" in n for n in b["notes"]), sid

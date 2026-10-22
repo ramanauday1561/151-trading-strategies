@@ -237,6 +237,12 @@ def main(argv=None):
     else:
         n_excl = len(R.excluded_entries())
     collect_errors(strategies, errors)
+    empty = [f"{sid}/{u}" for sid, st in strategies.items() for u, b in st["universes"].items()
+             if not b.get("error") and not (b.get("signal") or b.get("metrics") or b.get("curve"))]
+    if empty:
+        msg = f"{len(empty)} strategy results came back empty (not enough data): {', '.join(empty)}"
+        log.warning(msg)
+        print(f"::warning title=Empty strategy results::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg)
 
     # category files
     for cat, label, blurb in CATEGORIES:
