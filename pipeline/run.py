@@ -209,6 +209,7 @@ def main(argv=None):
     ap.add_argument("--synthetic", action="store_true", help="offline test data (never deployed)")
     ap.add_argument("--only", default="", help="comma-separated module names (testing)")
     ap.add_argument("--no-fundamentals", action="store_true")
+    ap.add_argument("--cache-dir", default=None, help="reuse slow-moving fundamentals across runs")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -218,7 +219,7 @@ def main(argv=None):
     only = {x for x in args.only.split(",") if x}
 
     t0 = time.time()
-    md = D.synthetic_market() if args.synthetic else D.fetch_live(with_fundamentals=not args.no_fundamentals)
+    md = D.synthetic_market() if args.synthetic else D.fetch_live(with_fundamentals=not args.no_fundamentals, cache_dir=args.cache_dir)
     if md.failures:
         msg = f"Yahoo returned no usable data for {len(md.failures)} symbols: {', '.join(md.failures)}"
         log.warning(msg)

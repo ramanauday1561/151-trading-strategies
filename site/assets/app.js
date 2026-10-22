@@ -44,11 +44,47 @@ if (!UNI_LABEL[state.uni]) state.uni = 'NIFTY50';
 
 // ------------------------------------------------------------------ data
 let VERSION = '';
+// Fast lane: the 'Live refresh' workflow publishes data to the live-data branch every 5 minutes during market
+// hours. It is newer than the Pages copy, so the app uses whichever has the later generated_at.
+const LIVE_BASE = 'https://raw.githubusercontent.com/ramanauday1561/151-trading-strategies/live-data/data/';
+state.base = 'data/';
+async function fetchMeta(base) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
+  try {
+    const r = await fetch(`${base}meta.json?t=${Date.now()}`, { cache: 'no-store', signal: ctl.signal });
+    return r.ok ? await r.json() : null;
+  } catch (e) { return null; } finally { clearTimeout(t); }
+}
+async function pickSource() {
+  const [pages, live] = await Promise.all([fetchMeta('data/'), fetchMeta(LIVE_BASE)]);
+  const newer = live && (!pages || Date.parse(live.generated_at) > Date.parse(pages.generated_at));
+  state.base = newer ? LIVE_BASE : 'data/';
+  return newer ? live : pages;
+}
+async function checkForUpdate() {
+  if (!state.meta || state.updating) return;
+  const live = await fetchMeta(LIVE_BASE);
+  const cur = Date.parse(state.meta.generated_at);
+  if (!live || !(Date.parse(live.generated_at) > cur)) return;
+  state.updating = true;
+  try {
+    state.base = LIVE_BASE; state.meta = live; VERSION = live.generated_at;
+    state.cats = {}; state.byId = {};
+    state.live = await getJSON('live');
+    renderChrome();
+    if (!/^#\/(s|c)\//.test(location.hash)) {             // do not yank a strategy page you are reading
+      const y = window.scrollY;
+      await route();
+      window.scrollTo(0, y);
+    }
+    toast('Updated with the latest data');
+  } catch (e) { /* keep showing the previous data */ } finally { state.updating = false; }
+}
 async function getJSON(name, fresh = false) {
   let lastErr;
   for (let attempt = 0; attempt < 4; attempt++) {
     // first try uses the versioned URL (cacheable); retries bypass every cache
-    const url = `data/${name}.json` + (fresh || !VERSION || attempt ? `?t=${Date.now()}` : `?v=${encodeURIComponent(VERSION)}`);
+    const url = `${state.base}${name}.json` + (fresh || !VERSION || attempt ? `?t=${Date.now()}` : `?v=${encodeURIComponent(VERSION)}`);
     try {
       const r = await fetch(url, fresh || attempt ? { cache: 'no-store' } : undefined);
       if (!r.ok) throw new Error(`${name}.json: HTTP ${r.status}`);
@@ -957,7 +993,8 @@ async function init() {
     b.closest('.tbl-wrap').querySelectorAll('tr.more').forEach(r => { r.hidden = false; }); b.closest('.tbl-foot').remove();
   });
   try {
-    state.meta = await getJSON('meta', true);
+    state.meta = await pickSource();
+    if (!state.meta) throw new Error('meta.json not available');
     VERSION = state.meta.generated_at;
     [state.live, state.registry] = await Promise.all([getJSON('live'), getJSON('registry')]);
   } catch (e) {
@@ -967,6 +1004,10 @@ async function init() {
   window.addEventListener('hashchange', route);
   route();
   refreshQuotes();
+  const tick = () => { if (!document.hidden) checkForUpdate(); };
+  setInterval(tick, 30000);                 // 30s: new data shows up within seconds of being published
+  document.addEventListener('visibilitychange', tick);
+  window.addEventListener('online', tick);
   setInterval(() => { if (nseOpen()) refreshQuotes(); }, 60000);
   setInterval(() => { if (state.meta) { renderChrome(); } }, 60000);
 }

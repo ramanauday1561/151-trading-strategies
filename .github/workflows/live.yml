@@ -1,0 +1,52 @@
+name: Live refresh
+
+# Refreshes the data every 5 minutes for the whole NSE session (09:15-15:30 IST) and publishes it to the
+# `live-data` branch, which the website reads directly (no Pages redeploy needed).
+# A segment runs for at most ~170 minutes and then starts the next one itself, so one late or missed cron
+# cannot leave a gap.  Cron only has to fire once per day; the extra entries are a safety net.
+on:
+  schedule:
+    - cron: "10 3 * * 1-5"    # 08:40 IST, before the open
+    - cron: "40 5 * * 1-5"    # 11:10 IST, safety net
+    - cron: "40 8 * * 1-5"    # 14:10 IST, safety net
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Ignore the market-hours window (testing)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write     # push the live-data branch
+  actions: write      # start the next segment
+
+concurrency:
+  group: live-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 190
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Refresh loop
+        id: loop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          FORCE=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then FORCE="--force --max-minutes 12"; fi
+          python -m pipeline.live_loop --out site/data --every 300 --max-minutes 170 --publish $FORCE
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: Start the next segment
+        if: steps.loop.outputs.code == '10'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run live.yml --ref "${{ github.ref_name }}"
