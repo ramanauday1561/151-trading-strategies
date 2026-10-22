@@ -45,10 +45,20 @@ if (!UNI_LABEL[state.uni]) state.uni = 'NIFTY50';
 // ------------------------------------------------------------------ data
 let VERSION = '';
 async function getJSON(name, fresh = false) {
-  const url = `data/${name}.json` + (fresh || !VERSION ? `?t=${Date.now()}` : `?v=${encodeURIComponent(VERSION)}`);
-  const r = await fetch(url, fresh ? { cache: 'no-store' } : undefined);
-  if (!r.ok) throw new Error(`${name}.json: HTTP ${r.status}`);
-  return r.json();
+  let lastErr;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    // first try uses the versioned URL (cacheable); retries bypass every cache
+    const url = `data/${name}.json` + (fresh || !VERSION || attempt ? `?t=${Date.now()}` : `?v=${encodeURIComponent(VERSION)}`);
+    try {
+      const r = await fetch(url, fresh || attempt ? { cache: 'no-store' } : undefined);
+      if (!r.ok) throw new Error(`${name}.json: HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      lastErr = e;
+      await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 async function loadCat(cat) {
   if (state.cats[cat]) return state.cats[cat];
@@ -697,7 +707,8 @@ async function route() {
     else await viewOverview();
   } catch (e) {
     console.error(e);
-    setView(`<p class="err">Something went wrong loading this view: ${esc(e.message)}</p>`);
+    setView(`<div class="empty"><h2>Couldn't load this page</h2><p class="muted" style="margin:8px 0 14px">Check your connection and try again.<br><span style="font-size:12px">${esc(e.message)}</span></p><button class="btn" type="button" id="retry-btn">↻ Retry</button></div>`);
+    $('#retry-btn')?.addEventListener('click', route);
   }
 }
 
