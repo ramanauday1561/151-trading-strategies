@@ -1,5 +1,5 @@
 /* Service worker: network-first (always fresh when online) with an offline fallback to the last good copy. */
-const CACHE = 'strategies-v2';
+const CACHE = 'strategies-v3';
 const SHELL = ['./', 'index.html', 'assets/style.css', 'assets/app.js', 'assets/vendor/chart.umd.js',
   'manifest.webmanifest', 'assets/icons/icon-192.png', 'assets/icons/icon-512.png'];
 

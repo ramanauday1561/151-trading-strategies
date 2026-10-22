@@ -36,7 +36,7 @@ const state = {
   uni: store.get('uni', 'NIFTY50'),
   meta: null, live: null, registry: null,
   cats: {}, byId: {}, charts: [],
-  sort: { key: 'sharpe', dir: -1 },
+  sort: { key: 'm1', dir: -1 },
   filter: { cat: 'all', q: '' },
   optFilter: 'all',
 };
@@ -185,6 +185,21 @@ function spark(vals, w = 96, h = 28) {
   const up = v[v.length - 1] >= v[0];
   return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" style="stroke:var(--${up ? 'up' : 'down'})" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
+function recent(s, b) {
+  const m = b?.metrics || {};
+  let m1, m3, unit = '%';
+  if (isNum(m.ret_1m)) { m1 = m.ret_1m * 100; m3 = m.ret_3m * 100; }
+  else if (isNum(m.last)) { m1 = m.last; m3 = m.last3; if (/vol/i.test(b.curve_units || '')) unit = ' vp'; }
+  else return null;
+  const st = m1 > 0 && m3 > 0 ? 'working' : m1 < 0 && m3 < 0 ? 'struggling' : 'mixed';
+  return { m1, m3, st, unit };
+}
+const REC_CHIP = { working: ['WORKING', 'up'], struggling: ['STRUGGLING', 'down'], mixed: ['MIXED', 'flat'] };
+function recChip(s, b) { const r = recent(s, b); if (!r) return ''; const [t, c] = REC_CHIP[r.st]; return `<span class="chip ${c}" title="Last month ${fmt.sn(r.m1, 1)}${r.unit}, last 3 months ${fmt.sn(r.m3, 1)}${r.unit}">${t}</span>`; }
+const saved = {
+  set: new Set((() => { try { return JSON.parse(store.get('saved', '[]')); } catch (e) { return []; } })()),
+  toggle(id) { this.set.has(id) ? this.set.delete(id) : this.set.add(id); store.set('saved', JSON.stringify([...this.set])); },
+};
 function biasChip(b) { const [t, c] = BIAS[b] || BIAS.neutral; return `<span class="chip ${c}">${t}</span>`; }
 function statusChip(s) { const x = STATUS_CHIP[s.status]; return x ? `<span class="chip ${x[1]}" title="${esc(s.adapted_note || '')}">${x[0]}</span>` : ''; }
 
@@ -301,6 +316,7 @@ function renderChrome() {
   const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
   $('#nav').innerHTML = `
     ${link('#/', 'Signal board', m.counts.implemented)}
+    ${link('#/now', 'Working now')}
     ${link('#/market', 'Market now')}
     <div class="grp">Strategies</div>
     ${cats.map(c => link('#/c/' + c.id, esc(c.label), c.count)).join('')}
@@ -358,8 +374,8 @@ async function viewOverview() {
       <div class="card"><h3>Best backtested risk-adjusted returns</h3>${mini(nonOpt, x => rowL(x, `<span class="num up">Sharpe ${fmt.n(x.b.metrics.sharpe)}</span>`))}</div>
       <div class="card"><h3>Option setups favoured by today's regime</h3>${mini(opts, x => rowL(x, biasChip(x.b.signal.bias)))}</div>
     </div></details>`;
-  const pills = [['all', 'All']].concat(m.categories.map(c => [c.id, c.label]));
-  const SORTS = [['sharpe', 'Sharpe'], ['perf', 'Backtest return'], ['dd', 'Max drawdown'], ['hit', 'Hit rate'], ['id', 'Book section']];
+  const pills = [['all', 'All'], ['saved', `★ Saved${saved.set.size ? ' (' + saved.set.size + ')' : ''}`]].concat(m.categories.map(c => [c.id, c.label]));
+  const SORTS = [['m1', 'Last month'], ['sharpe', 'Sharpe'], ['perf', 'Backtest return'], ['dd', 'Max drawdown'], ['hit', 'Hit rate'], ['id', 'Book section']];
   setView(`
     <div class="page-head"><div><h1>Signal board · ${UNI_LABEL[state.uni]}</h1>
       <p>Every applicable strategy from <i>151 Trading Strategies</i> on live Yahoo Finance data. Tap one for its chart, portfolio and method.</p></div></div>
@@ -376,18 +392,18 @@ async function viewOverview() {
   state.boardLimit = 20;
   const draw = () => {
     const q = state.filter.q.trim().toLowerCase();
-    let rows = list.filter(x => (state.filter.cat === 'all' || x.s.category === state.filter.cat) &&
+    let rows = list.filter(x => (state.filter.cat === 'all' || (state.filter.cat === 'saved' ? saved.set.has(x.s.id) : x.s.category === state.filter.cat)) &&
       (!q || (x.s.id + ' ' + x.s.name + ' ' + (x.b.signal?.label || '')).toLowerCase().includes(q)));
     const key = state.sort.key, dir = state.sort.dir;
     const val = x => key === 'id' ? x.s.id.split('.').map(Number).reduce((a, n, i) => a + n / Math.pow(1000, i), 0)
       : key === 'name' ? x.s.name.toLowerCase() : key === 'perf' ? perfCell(x.s, x.b).val : key === 'dd' ? x.b.metrics?.max_dd
-      : key === 'hit' ? x.b.metrics?.hit_rate : x.b.metrics?.sharpe;
+      : key === 'hit' ? x.b.metrics?.hit_rate : key === 'm1' ? (recent(x.s, x.b)?.unit === '%' ? recent(x.s, x.b).m1 : null) : x.b.metrics?.sharpe;
     rows = rows.slice().sort((a, b) => { const va = val(a), vb = val(b); if (va == null) return 1; if (vb == null) return -1; return va < vb ? -dir : va > vb ? dir : 0; });
     const shown = rows.slice(0, state.boardLimit);
     const th = (k, label, r) => `<th class="sortable ${r ? 'r' : ''}" data-k="${k}" aria-sort="${state.sort.key === k ? (dir > 0 ? 'ascending' : 'descending') : 'none'}">${label}${state.sort.key === k ? `<span class="arr">${dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`;
     $('#board').innerHTML = `<thead><tr>${th('id', 'ID')}${th('name', 'Strategy')}<th>Signal now</th>${th('perf', 'Backtest return', 1)}${th('sharpe', 'Sharpe', 1)}${th('dd', 'Max DD', 1)}${th('hit', 'Hit rate', 1)}<th></th></tr></thead><tbody>${shown.map(x => {
       const p = perfCell(x.s, x.b), mm = x.b.metrics || {};
-      return `<tr class="click" data-id="${x.s.id}" tabindex="0"><td><span class="chip id">${x.s.id}</span></td><td class="wrap"><b>${esc(x.s.name)}</b> ${statusChip(x.s)}</td>
+      return `<tr class="click" data-id="${x.s.id}" tabindex="0"><td><span class="chip id">${x.s.id}</span></td><td class="wrap">${saved.set.has(x.s.id) ? '<span class="star on">★</span> ' : ''}<b>${esc(x.s.name)}</b> ${statusChip(x.s)} ${recChip(x.s, x.b)}</td>
         <td class="sig">${x.b.signal ? biasChip(x.b.signal.bias) + ' ' + esc(x.b.signal.label.length > 90 ? x.b.signal.label.slice(0, 88) + '…' : x.b.signal.label) : '–'}</td>
         <td class="r ${p.cls}">${p.text}</td><td class="r ${cls(mm.sharpe)}">${fmt.n(mm.sharpe)}</td><td class="r">${ddCell(x.b)}</td><td class="r">${isNum(mm.hit_rate) ? fmt.pct(mm.hit_rate, 0) : '–'}</td>
         <td>${x.b.curve ? spark(x.b.curve.strategy, 80, 24) : ''}</td></tr>`;
@@ -395,10 +411,10 @@ async function viewOverview() {
     $('#blist').innerHTML = shown.map(x => {
       const p = perfCell(x.s, x.b), mm = x.b.metrics || {};
       const sg = x.b.signal ? esc(x.b.signal.label.length > 70 ? x.b.signal.label.slice(0, 68) + '…' : x.b.signal.label) : '';
-      return `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${statusChip(x.s)}</div>
+      return `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${saved.set.has(x.s.id) ? '<span class="star on">★</span>' : ''}${statusChip(x.s)}${recChip(x.s, x.b)}</div>
         <div class="l2">${x.b.signal ? biasChip(x.b.signal.bias) : ''}<span>${sg}</span></div>
         <div class="l3"><span><i>Sharpe</i><b class="${cls(mm.sharpe)}">${fmt.n(mm.sharpe)}</b></span><span><i>Return</i><b class="${p.cls}">${p.text}</b></span><span><i>Max DD</i><b>${ddCell(x.b)}</b></span>${x.b.curve ? spark(x.b.curve.strategy, 64, 22) : ''}</div></a>`;
-    }).join('') || '<p class="empty">No strategies match.</p>';
+    }).join('') || `<p class="empty">${state.filter.cat === 'saved' ? 'Nothing saved yet – open a strategy and tap ☆ Save.' : 'No strategies match.'}</p>`;
     $('#boardmore').innerHTML = rows.length > shown.length
       ? `<button class="btn" type="button" id="more-btn">Show ${Math.min(20, rows.length - shown.length)} more <span class="muted">(${rows.length - shown.length} left)</span></button>` : (rows.length ? `<span class="muted">${rows.length} strategies</span>` : '');
     $('#more-btn')?.addEventListener('click', () => { state.boardLimit += 20; draw(); });
@@ -433,7 +449,7 @@ async function viewCategory(cat) {
     const shown = rows.slice(0, limit);
     $('#cards').innerHTML = shown.map(s => {
       const b = blockOf(s) || {}, m = b.metrics || {}, p = perfCell(s, b);
-      return `<a class="scard" href="#/s/${s.id}"><div class="top"><span class="chip id">${s.id}</span><span>${statusChip(s)} ${b.signal ? biasChip(b.signal.bias) : ''}</span></div>
+      return `<a class="scard" href="#/s/${s.id}"><div class="top"><span class="chip id">${s.id}</span><span>${statusChip(s)} ${recChip(s, b)} ${b.signal ? biasChip(b.signal.bias) : ''}</span></div>
         <div class="nm">${esc(s.name)}</div><div class="sg">${esc(b.error ? 'Failed to compute in the latest run' : (b.signal?.label || (b.notes?.[0] || 'No data')))}</div>
         <div class="row"><div class="kv"><div><span>Return</span><b class="${p.cls}">${p.val == null ? '–' : (isNum(m.cagr) ? fmt.spct(m.cagr) : fmt.sn(m.avg) + '/mo')}</b></div><div><span>Sharpe</span><b class="${cls(m.sharpe)}">${fmt.n(m.sharpe)}</b></div></div>${b.curve ? spark(b.curve.strategy) : ''}</div></a>`;
     }).join('') || '<p class="empty">No strategies in this view.</p>';
@@ -465,7 +481,7 @@ async function viewStrategy(id) {
   const head = `
     <div class="crumbs"><a href="#/c/${s.category}">${esc(cat.label)}</a> › <span class="chip id">${s.id}</span>
       <span style="margin-left:auto" class="nav-btns">${prev ? `<a class="btn" href="#/s/${prev.id}" aria-label="Previous strategy">← ${prev.id}</a>` : ''}${next ? `<a class="btn" href="#/s/${next.id}" aria-label="Next strategy">${next.id} →</a>` : ''}</span></div>
-    <div class="page-head"><div><h1>${esc(s.name)} ${statusChip(s)}</h1><p>${esc(s.desc)}</p>
+    <div class="page-head"><div><h1>${esc(s.name)} ${statusChip(s)}</h1><p>${esc(s.desc)}</p><p style="margin-top:8px">${b ? recChip(s, b) : ''} <button type="button" class="btn" id="star-btn">${saved.set.has(s.id) ? '★ Saved' : '☆ Save'}</button></p>
       ${s.adapted_note ? `<p style="margin-top:6px"><span class="chip ${s.status}">${s.status === 'proxy' ? 'PROXY DATA' : 'ADAPTED'}</span> <span class="muted">${esc(s.adapted_note)}</span></p>` : ''}</div>
       <div class="muted">${UNI_LABEL[state.uni]}${s.outlook ? ` · ${esc(s.outlook)} · ${esc(s.style)}` : ''}</div></div>`;
   if (!b) { setView(head + `<p class="err">No results for ${UNI_LABEL[state.uni]} (module error – see Method &amp; data).</p>`); return; }
@@ -535,6 +551,54 @@ async function viewStrategy(id) {
 
   setView(head + `<div class="stack">${sigHTML}<div>${tabsHTML(panels)}</div></div>`);
   if (panels.length) wireTabs(panels);
+}
+// (star handler is attached in setView wiring below)
+
+
+async function viewNow() {
+  setView(loadingHTML);
+  await loadAll();
+  const list = allStrategies().map(s => ({ s, b: blockOf(s), r: null })).filter(x => x.b && !x.b.error).map(x => ({ ...x, r: recent(x.s, x.b) })).filter(x => x.r);
+  const idx = (state.live?.indices || []).find(i => i.name === UNI_LABEL[state.uni]);
+  const vix = (state.live?.indices || []).find(i => i.symbol === '^INDIAVIX');
+  const up200 = isNum(idx?.vs_dma200) ? idx.vs_dma200 > 0 : null, up50 = isNum(idx?.vs_dma50) ? idx.vs_dma50 > 0 : null;
+  const trend = up200 && up50 ? 'Uptrend' : up200 === false && up50 === false ? 'Downtrend' : 'Mixed / choppy';
+  const vp = vix?.pctile_1y;
+  const volr = !isNum(vp) ? '' : vp > 0.7 ? 'high' : vp < 0.3 ? 'low' : 'normal';
+  const read = {
+    Uptrend: 'Trend-following, momentum and bullish option structures tend to be in step; mean-reversion shorts of winners struggle.',
+    Downtrend: 'Bearish and hedged structures, defensive rotation and cash/gold tilts tend to be in step.',
+    'Mixed / choppy': 'No clear trend: range-bound, mean-reversion and premium-selling structures tend to be in step; trend rules whipsaw.',
+  }[trend] + (volr === 'high' ? ' Volatility is elevated, so premium is rich but risk is large.' : volr === 'low' ? ' Volatility is low, so options are cheap to buy and thin to sell.' : '');
+  const by = st => list.filter(x => x.r.st === st);
+  const sortR = a => a.slice().sort((x, y) => (x.r.unit === '%' ? 0 : 1) - (y.r.unit === '%' ? 0 : 1) || y.r.m1 - x.r.m1);
+  const row = x => `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${statusChip(x.s)}</div>
+    <div class="l2">${x.b.signal ? biasChip(x.b.signal.bias) : ''}<span>${esc(x.b.signal?.label || '')}</span></div>
+    <div class="l3"><span><i>Last month</i><b class="${cls(x.r.m1)}">${fmt.sn(x.r.m1, 1)}${x.r.unit}</b></span><span><i>Last 3 months</i><b class="${cls(x.r.m3)}">${fmt.sn(x.r.m3, 1)}${x.r.unit}</b></span><span><i>Category</i><b>${esc(state.meta.categories.find(c => c.id === x.s.category).label)}</b></span></div></a>`;
+  const listHTML = (id, arr, empty) => `<div class="blist" id="${id}"></div><div class="center" id="${id}-more"></div>${arr.length ? '' : `<p class="empty">${empty}</p>`}`;
+  const W = sortR(by('working')), S = sortR(by('struggling')).reverse().sort((a, b) => a.r.m1 - b.r.m1), O = list.filter(x => x.s.category === 'options' && x.b.fit?.label === 'favourable');
+  const panels = [
+    { id: 'w', label: `Working (${W.length})`, html: listHTML('lw', W, 'Nothing is positive over both horizons.'), init: () => paged('lw', W, row) },
+    { id: 's', label: `Struggling (${S.length})`, html: listHTML('ls', S, 'Nothing is negative over both horizons.'), init: () => paged('ls', S, row) },
+    { id: 'o', label: `Option fit (${O.length})`, html: listHTML('lo', O, 'No option structure is flagged favourable by today\'s regime.'), init: () => paged('lo', O, x => row(x).replace('</div></a>', `<span class="muted" style="font-size:12px">${esc(x.b.fit.why)}</span></div></a>`)) },
+  ];
+  setView(`<div class="page-head"><div><h1>Working now · ${UNI_LABEL[state.uni]}</h1><p>Which strategies the current market is rewarding. Each strategy is re-run on the latest data; “working” means it made money over both the last month and the last 3 months. It describes the recent past, not a forecast.</p></div></div>
+    <div class="card" style="margin-bottom:14px"><h3>Market regime</h3>
+      <div class="tiles" style="margin:10px 0"><div class="tile"><div class="k">${UNI_LABEL[state.uni]} trend</div><div class="v ${trend === 'Uptrend' ? 'up' : trend === 'Downtrend' ? 'down' : ''}" style="font-size:15px">${trend}</div><div class="s">vs 50 / 200-day: ${isNum(idx?.vs_dma50) ? fmt.spct(idx.vs_dma50) : '–'} / ${isNum(idx?.vs_dma200) ? fmt.spct(idx.vs_dma200) : '–'}</div></div>
+      <div class="tile"><div class="k">Last month</div><div class="v ${cls(idx?.ret_1m)}">${fmt.spct(idx?.ret_1m)}</div></div>
+      <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 1) : '–'}</div><div class="s">${isNum(vp) ? fmt.n(vp * 100, 0) + 'th pctile · ' + volr : ''}</div></div>
+      <div class="tile"><div class="k">Working / struggling</div><div class="v"><span class="up">${W.length}</span> <span class="muted">/</span> <span class="down">${S.length}</span></div><div class="s">${by('mixed').length} mixed</div></div></div>
+      <p class="muted" style="font-size:13px">${esc(read)}</p></div>${tabsHTML(panels)}`);
+  wireTabs(panels);
+}
+function paged(id, arr, rowFn, step = 12) {
+  let n = step;
+  const draw = () => {
+    $('#' + id).innerHTML = arr.slice(0, n).map(rowFn).join('');
+    $('#' + id + '-more').innerHTML = arr.length > n ? `<button class="btn" type="button">Show ${Math.min(step, arr.length - n)} more <span class="muted">(${arr.length - n} left)</span></button>` : '';
+    $('#' + id + '-more button')?.addEventListener('click', () => { n += step; draw(); });
+  };
+  draw();
 }
 
 async function viewMarket() {
@@ -624,6 +688,7 @@ async function route() {
   const [a, b] = h.split('/');
   try {
     if (!a) await viewOverview();
+    else if (a === 'now') await viewNow();
     else if (a === 'market') await viewMarket();
     else if (a === 'c' && b) await viewCategory(b);
     else if (a === 's' && b) await viewStrategy(decodeURIComponent(h.slice(2)));
@@ -673,6 +738,8 @@ async function init() {
   $('#scrim').addEventListener('click', closeMenu);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
   document.addEventListener('click', e => {
+    const st = e.target.closest('#star-btn');
+    if (st) { const id = decodeURIComponent(location.hash.slice(4)); saved.toggle(id); st.textContent = saved.set.has(id) ? '★ Saved' : '☆ Save'; return; }
     const b = e.target.closest('.show-all'); if (!b) return;
     b.closest('.tbl-wrap').querySelectorAll('tr.more').forEach(r => { r.hidden = false; }); b.closest('.tbl-foot').remove();
   });
