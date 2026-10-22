@@ -326,6 +326,7 @@ function renderChrome() {
   const link = (h, label, count) => `<a href="${h}" ${cur === h || (h === '#/' && (cur === '' || cur === '#')) ? 'aria-current="page"' : ''}>${label}${count != null ? `<span class="count">${count}</span>` : ''}</a>`;
   $('#nav').innerHTML = `
     ${link('#/', 'Signal board', m.counts.implemented)}
+    ${link('#/play', "Today's playbook")}
     ${link('#/now', 'Working now')}
     ${link('#/market', 'Market now')}
     <div class="grp">Strategies</div>
@@ -389,6 +390,7 @@ async function viewOverview() {
   setView(`
     <div class="page-head"><div><h1>Signal board · ${UNI_LABEL[state.uni]}</h1>
       <p>Every applicable strategy from <i>151 Trading Strategies</i> on live Yahoo Finance data. Tap one for its chart, portfolio and method.</p></div></div>
+    <a class="promo" href="#/play"><b>Today's playbook</b><span>All strategies combined: stance, stocks, options, risk →</span></a>
     ${hero}${hi}
     <div class="toolbar">
       <input type="search" id="q" placeholder="Search strategies…" value="${esc(state.filter.q)}" aria-label="Search strategies">
@@ -598,7 +600,7 @@ async function viewNow() {
       <div class="tile"><div class="k">Last 21 days</div><div class="v ${cls(idx?.ret_1m)}">${fmt.spct(idx?.ret_1m)}</div></div>
       <div class="tile"><div class="k">India VIX</div><div class="v">${vix ? fmt.n(vix.last, 1) : '–'}</div><div class="s">${isNum(vp) ? fmt.n(vp * 100, 0) + 'th pctile · ' + volr : ''}</div></div>
       <div class="tile"><div class="k">Working / struggling</div><div class="v"><span class="up">${W.length}</span> <span class="muted">/</span> <span class="down">${S.length}</span></div><div class="s">${by('mixed').length} mixed</div></div></div>
-      <p class="muted" style="font-size:13px">${esc(read)}</p></div>${tabsHTML(panels)}`);
+      <p class="muted" style="font-size:13px">${esc(read)}</p></div><a class="promo" href="#/play" style="margin-bottom:14px"><b>Today's playbook</b><span>Turn this into a stance, stock picks and an option idea →</span></a>${tabsHTML(panels)}`);
   wireTabs(panels);
 }
 function paged(id, arr, rowFn, step = 12) {
@@ -609,6 +611,101 @@ function paged(id, arr, rowFn, step = 12) {
     $('#' + id + '-more button')?.addEventListener('click', () => { n += step; draw(); });
   };
   draw();
+}
+
+
+// ------------------------------------------------------------------ Today's playbook
+const PLAY_INDEX = ['3.11', '3.12', '3.13', '3.14', '3.15', '3.17', '18.2'];
+const PLAY_STOCKS = {
+  '3.1': 'Trend', '3.7': 'Trend', '10.4': 'Trend', '3.6': 'Factor', '3.4': 'Defensive', '3.3': 'Value',
+  '3.9': 'Reversion', '3.9.1': 'Reversion', '3.10': 'Reversion', '3.18': 'Reversion', '3.18.1': 'Reversion', '10.3': 'Reversion', '3.20': 'Blend',
+};
+async function viewPlay() {
+  setView(loadingHTML);
+  await loadAll();
+  const get = id => { const s = state.byId[id]; return s ? { s, b: blockOf(s) } : null; };
+  const live = state.live?.indices || [];
+  const idx = live.find(i => i.name === UNI_LABEL[state.uni]);
+  const vix = live.find(i => i.symbol === '^INDIAVIX');
+
+  // 1) index stance: each index-level rule votes
+  const votes = [];
+  PLAY_INDEX.forEach(id => {
+    const x = get(id); if (!x || !x.b || x.b.error || !x.b.signal) return;
+    votes.push({ id, name: x.s.name, bias: x.b.signal.bias === 'mixed' ? 'neutral' : x.b.signal.bias, why: x.b.signal.label });
+  });
+  if (isNum(idx?.vs_dma200)) votes.push({ id: '', name: 'Price vs 200-day average', bias: idx.vs_dma200 > 0 ? 'long' : 'short', why: fmt.spct(idx.vs_dma200) + ' vs 200-day' });
+  if (isNum(idx?.vs_dma50)) votes.push({ id: '', name: 'Price vs 50-day average', bias: idx.vs_dma50 > 0 ? 'long' : 'short', why: fmt.spct(idx.vs_dma50) + ' vs 50-day' });
+  const nL = votes.filter(v => v.bias === 'long').length, nS = votes.filter(v => v.bias === 'short').length, nN = votes.length - nL - nS;
+  const net = votes.length ? (nL - nS) / votes.length : 0;
+  const stance = net >= 0.4 ? 'Bullish' : net <= -0.4 ? 'Bearish' : 'Neutral / choppy';
+  const stanceCls = net >= 0.4 ? 'up' : net <= -0.4 ? 'down' : 'flat';
+  const agree = votes.length ? Math.max(nL, nS, nN) / votes.length : 0;
+  const conf = agree >= 0.7 ? 'high' : agree >= 0.5 ? 'moderate' : 'low';
+
+  // 2) stock picks: weighted votes across cross-sectional portfolios
+  const wt = r => ({ working: 1, mixed: 0.6, struggling: 0.3 }[r?.st] ?? 0.6);
+  const agg = {};
+  let nStrat = 0;
+  Object.keys(PLAY_STOCKS).forEach(id => {
+    const x = get(id); const t = x?.b?.tables?.[0];
+    if (!x || !x.b || x.b.error || !t || t.columns[0] !== 'Side' || t.columns[1] !== 'Stock') return;
+    nStrat++;
+    const w = wt(recent(x.s, x.b));
+    // only a strategy's conviction positions: its largest 20% of the universe per side (weight-based books hold almost everything)
+    const cap = Math.max(3, Math.round(0.2 * (state.meta.universes[state.uni]?.constituents || 30)));
+    const wOf = r => Math.abs(parseFloat(String(r[r.length - 1]).replace('%', ''))) || 0;
+    const keep = [];
+    ['Long', 'Short'].forEach(side => keep.push(...t.rows.filter(r => r[0] === side).sort((a, b) => wOf(b) - wOf(a)).slice(0, cap)));
+    keep.forEach(r => {
+      const a = (agg[r[1]] ||= { name: r[1], long: 0, short: 0, nl: 0, ns: 0, fam: new Set(), by: [] });
+      if (r[0] === 'Long') { a.long += w; a.nl++; } else if (r[0] === 'Short') { a.short += w; a.ns++; } else return;
+      a.fam.add(PLAY_STOCKS[id]); a.by.push(id);
+    });
+  });
+  const rows = Object.values(agg).map(a => ({ ...a, score: a.long - a.short }));
+  const longs = rows.filter(a => a.score > 0).sort((a, b) => b.score - a.score || b.nl - a.nl).slice(0, 10);
+  const shorts = rows.filter(a => a.score < 0).sort((a, b) => a.score - b.score || b.ns - a.ns).slice(0, 10);
+  const stockRow = (a, side) => `<div class="prow"><div><b>${esc(a.name)}</b><div class="muted" style="font-size:11.5px">${[...a.fam].join(' · ')}</div></div><div class="num ${side === 'L' ? 'up' : 'down'}">${side === 'L' ? a.nl : a.ns} of ${nStrat}${(side === 'L' ? a.ns : a.nl) ? `<span class="muted"> (−${side === 'L' ? a.ns : a.nl})</span>` : ''}</div></div>`;
+
+  // 3) option structures that match the stance and today's volatility
+  const want = net >= 0.4 ? 'bullish' : net <= -0.4 ? 'bearish' : 'neutral';
+  const optsAll = (state.cats.options?.strategies || []).map(s => ({ s, b: blockOf(s) })).filter(x => x.b && !x.b.error);
+  const pool = optsAll.filter(x => x.s.outlook === want && x.b.fit?.label !== 'unfavourable');
+  const rank = x => (x.b.fit?.label === 'favourable' ? 100 : 0) + (x.b.metrics?.sharpe || 0) * 10;
+  const opts = pool.sort((a, b) => rank(b) - rank(a)).slice(0, 4);
+  const ivr = opts[0]?.b.fit?.iv_rank ?? optsAll[0]?.b.fit?.iv_rank;
+  const volTilt = isNum(ivr) ? (ivr >= 60 ? 'India VIX is rich: favour defined-risk premium selling (spreads, condors).' : ivr <= 30 ? 'India VIX is cheap: favour buying options / debit spreads.' : 'Volatility is mid-range: no strong edge from volatility alone.') : '';
+
+  // 4) risk
+  const vt = get('6.5'), hg = get('10.1'), vrp = get('7.4');
+  const expo = vt?.b?.signal?.label || '';
+  const beta = hg?.b?.metrics?.basket_beta;
+
+  const chipB = b => biasChip(b === 'neutral' ? 'neutral' : b);
+  const panels = [
+    { id: 'st', label: 'Stance', html: `
+      <div class="card stance ${stanceCls}"><div class="k">${UNI_LABEL[state.uni]} stance</div><div class="big ${stanceCls}">${stance}</div>
+        <p class="muted">${nL} long · ${nS} short · ${nN} flat of ${votes.length} index signals. Agreement: <b>${conf}</b>. ${conf === 'low' ? 'Signals disagree, so keep size small.' : ''}</p>
+        <div class="votebar"><i class="up" style="width:${votes.length ? nL / votes.length * 100 : 0}%"></i><i class="flat" style="width:${votes.length ? nN / votes.length * 100 : 0}%"></i><i class="down" style="width:${votes.length ? nS / votes.length * 100 : 0}%"></i></div></div>
+      <div class="card" style="margin-top:12px"><h3>Who voted what</h3><div class="stack" style="gap:8px;margin-top:10px">${votes.map(v => `<${v.id ? `a href="#/s/${v.id}"` : 'div'} class="mrow"><span>${v.id ? `<span class="chip id">${v.id}</span> ` : ''}${esc(v.name)}</span>${chipB(v.bias)}</${v.id ? 'a' : 'div'}>`).join('')}</div></div>` },
+    { id: 'sk', label: 'Stocks', html: `
+      <p class="muted" style="margin-bottom:10px;font-size:13px">Stocks ranked by how many of the ${nStrat} stock strategies hold them today, weighting strategies that are working now more. Trend, factor and reversion strategies often disagree, so the count in brackets shows opposing votes.</p>
+      <div class="grid cols-2 even"><div class="card"><h3>Most-held longs</h3><div class="plist">${longs.map(a => stockRow(a, 'L')).join('') || '<p class="muted">None</p>'}</div></div>
+      <div class="card"><h3>Most-held shorts</h3><div class="plist">${shorts.map(a => stockRow(a, 'S')).join('') || '<p class="muted">None</p>'}</div></div></div>` },
+    { id: 'op', label: 'Options', html: `
+      <p class="muted" style="margin-bottom:10px;font-size:13px">Structures matching a ${want} view and not penalised by today's volatility. ${esc(volTilt)} Premiums are theoretical.</p>
+      <div class="blist">${opts.map(x => `<a class="brow" href="#/s/${x.s.id}"><div class="l1"><span class="chip id">${x.s.id}</span><b>${esc(x.s.name)}</b>${recChip(x.s, x.b)}</div>
+        <div class="l2"><span>${esc(x.b.fit.why)}</span></div>
+        <div class="l3"><span><i>${x.b.stats.net_premium >= 0 ? 'Debit' : 'Credit'}</i><b>${fmt.n(Math.abs(x.b.stats.net_premium_pct), 2)}%</b></span><span><i>Max loss</i><b class="down">${x.b.stats.max_loss == null ? 'Unlimited' : x.b.stats.riskless ? 'None' : fmt.n(x.b.stats.max_loss / x.b.payoff.spot * 100, 1) + '%'}</b></span><span><i>Prob. profit</i><b>${fmt.pct(x.b.stats.pop, 0)}</b></span></div></a>`).join('') || '<p class="empty">No structure fits.</p>'}</div>` },
+    { id: 'rk', label: 'Risk', html: `<div class="stack">
+      <div class="card"><h3>How much index to hold</h3><p>${esc(expo || 'n/a')}</p><p class="muted" style="font-size:12.5px;margin-top:6px">Volatility targeting (6.5): size the position so portfolio volatility stays near 12%.</p></div>
+      <div class="card"><h3>Hedge ratio</h3><p>${isNum(beta) ? `Short about <b>₹${fmt.n(beta * 100, 0)}</b> of index futures per ₹100 of ${UNI_LABEL[state.uni]} stocks` : 'n/a'}</p><p class="muted" style="font-size:12.5px;margin-top:6px">Minimum-variance hedge from strategy 10.1.</p></div>
+      <div class="card"><h3>Volatility premium</h3><p>${esc(vrp?.b?.signal?.label || 'n/a')}</p><p class="muted" style="font-size:12.5px;margin-top:6px">Strategy 7.4: sell volatility only when India VIX ${vix ? '(' + fmt.n(vix.last, 1) + ')' : ''} exceeds recent realised volatility.</p></div></div>` },
+  ];
+  setView(`<div class="page-head"><div><h1>Today's playbook · ${UNI_LABEL[state.uni]}</h1><p>All strategies combined into one read of today's ${UNI_LABEL[state.uni]}: the market stance, the stocks most strategies hold, option structures that fit, and risk sizing. <span class="muted">${freshness()}</span></p></div></div>${tabsHTML(panels)}
+    <p class="muted" style="font-size:12px;margin-top:14px">Many strategies are variants of the same ideas (momentum, mean-reversion), so agreement overstates independent evidence. Educational use only, not investment advice.</p>`);
+  wireTabs(panels);
 }
 
 async function viewMarket() {
@@ -698,6 +795,7 @@ async function route() {
   const [a, b] = h.split('/');
   try {
     if (!a) await viewOverview();
+    else if (a === 'play') await viewPlay();
     else if (a === 'now') await viewNow();
     else if (a === 'market') await viewMarket();
     else if (a === 'c' && b) await viewCategory(b);
