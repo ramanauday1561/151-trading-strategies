@@ -229,3 +229,16 @@ def test_sector_rotation_falls_back_to_constituent_baskets(market):
         b = out[sid]["block"]
         assert b.get("metrics") and b.get("signal"), sid
         assert any("basket" in n for n in b["notes"]), sid
+
+
+def test_live_window_and_publish_guard(tmp_path, monkeypatch):
+    import datetime as dt
+    from pipeline import live_loop as L
+    ist = L.IST
+    assert L.in_window(dt.datetime(2026, 10, 23, 9, 20, tzinfo=ist))        # Friday morning
+    assert L.in_window(dt.datetime(2026, 10, 23, 15, 40, tzinfo=ist))       # last refresh after the close
+    assert not L.in_window(dt.datetime(2026, 10, 23, 16, 0, tzinfo=ist))
+    assert not L.in_window(dt.datetime(2026, 10, 24, 10, 0, tzinfo=ist))    # Saturday
+    assert L.window_over(dt.datetime(2026, 10, 24, 10, 0, tzinfo=ist))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert L.publish(tmp_path) is False                                      # never pushes without credentials

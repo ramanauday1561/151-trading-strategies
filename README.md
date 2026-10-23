@@ -14,6 +14,10 @@ A dark-mode dashboard that runs the strategies from *151 Trading Strategies* (Z.
 
 GitHub pauses scheduled workflows after 60 days without repo activity; re-enable from the Actions tab if that happens.
 
+## Live during market hours
+
+`Live refresh` (`.github/workflows/live.yml`) runs `pipeline/live_loop.py`: every 5 minutes from 08:45 to 15:45 IST on weekdays it re-runs all strategies and force-pushes the JSON to the `live-data` branch. The site reads that branch when it is newer than the Pages copy and re-renders on its own (it checks every 30 s). Each job segment lasts ~170 min and starts the next one itself, so GitHub's unreliable cron only has to fire once a day. It stops by itself on weekends and exchange holidays. Run it manually from Actions with **force** ticked to test outside market hours.
+
 ## Install on your phone (PWA)
 
 Open the Pages URL over HTTPS, then:

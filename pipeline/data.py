@@ -129,7 +129,26 @@ def _fetch_intraday(symbols=("^NSEI", "^BSESN", "^INDIAVIX")) -> dict:
     return out
 
 
-def fetch_live(years: int = C.HISTORY_YEARS, with_fundamentals: bool = True) -> MarketData:
+def _cached_fundamentals(symbol_used: dict, cache_dir: str | None, max_age_h: float = 12.0) -> dict:
+    """P/B and market cap move slowly: reuse them across the 5-minute refresh loop."""
+    import json
+    import os
+    path = os.path.join(cache_dir, "fundamentals.json") if cache_dir else None
+    if path and os.path.exists(path) and (time.time() - os.path.getmtime(path)) / 3600 < max_age_h:
+        try:
+            cached = json.load(open(path))
+            if sum(1 for v in cached.values() if v) >= 0.7 * len(symbol_used):
+                return cached
+        except Exception:
+            pass
+    fresh = _fetch_fundamentals(symbol_used)
+    if path and sum(1 for v in fresh.values() if v) >= 0.5 * len(symbol_used):
+        os.makedirs(cache_dir, exist_ok=True)
+        json.dump(fresh, open(path, "w"))
+    return fresh
+
+
+def fetch_live(years: int = C.HISTORY_YEARS, with_fundamentals: bool = True, cache_dir: str | None = None) -> MarketData:
     stock_syms, other_syms = U.all_symbol_groups()
     symbols = stock_syms + other_syms
     chunks = [symbols[i:i + 20] for i in range(0, len(symbols), 20)]
@@ -187,7 +206,7 @@ def fetch_live(years: int = C.HISTORY_YEARS, with_fundamentals: bool = True) -> 
     )
     if with_fundamentals:
         try:
-            md.fundamentals = _fetch_fundamentals(symbol_used)
+            md.fundamentals = _cached_fundamentals(symbol_used, cache_dir)
         except Exception as exc:
             log.warning("fundamentals failed: %r", exc)
     md.intraday = _fetch_intraday()
